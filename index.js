@@ -22,17 +22,15 @@ const NUMEROS_AUTORIZADOS = [
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const storage = new Storage();
 
-// Verificar si el número está autorizado
-function numeroAutorizado(numero) {
-  return NUMEROS_AUTORIZADOS.some(n => numero.includes(n) || n.includes(numero));
-}
+// Memoria temporal por conversación
+const sesiones = {};
 
-// Extraer texto entre #p y el último punto
-function extraerTexto(mensaje) {
-  const inicio = mensaje.indexOf('#p');
-  const fin = mensaje.lastIndexOf('.');
-  if (inicio === -1 || fin === -1 || fin < inicio) return '';
-  return mensaje.substring(inicio + 2, fin).trim();
+// Verificar número autorizado
+function numeroAutorizado(numero) {
+  if (!numero) return false;
+  return NUMEROS_AUTORIZADOS.some(n => 
+    numero.includes(n) || n.includes(numero)
+  );
 }
 
 // Descargar imagen de Chatwoot
@@ -48,11 +46,14 @@ async function descargarImagen(url) {
 async function subirImagen(buffer, filename) {
   const bucket = storage.bucket(BUCKET_NAME);
   const file = bucket.file(`pedidos/${filename}`);
-  await file.save(buffer, { contentType: 'image/jpeg', public: true });
+  await file.save(buffer, { 
+    contentType: 'image/jpeg', 
+    public: true 
+  });
   return `https://storage.googleapis.com/${BUCKET_NAME}/pedidos/${filename}`;
 }
 
-// Procesar imagen y texto con Gemini
+// Procesar con Gemini
 async function procesarConGemini(imageBuffer, textoAdicional) {
   const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
@@ -64,30 +65,33 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
   };
 
   const prompt = `
-    Eres un asistente que extrae datos de pedidos de clientes.
-    Analiza la imagen y el texto adicional proporcionado.
+    Eres un asistente que extrae datos de pedidos de clientes para una tienda de jeans.
+    Analiza la imagen del chat y el texto adicional del operador.
     Combina ambas fuentes para obtener la información más completa posible.
+    El texto adicional puede contener datos que no están en la imagen que por lo general es , talla(6,8,28,30,32, etc.) código de producto(cla,hop, ov cargo, etc) y código de color(ne, ao, ac, rojo, entre otros). Valor del producto (130, 100,y superiores), en ocasiones características de la ubicación del destinatario que no están en la imagen(ciudad,que se dirige a oficina interrapidismo entre otros) 
     
     Texto adicional del operador: "${textoAdicional}"
     
-    Extrae los siguientes datos y devuelve SOLO un JSON válido sin texto adicional:
+    Extrae los siguientes datos y devuelve SOLO un JSON válido sin texto adicional ni backticks:
     {
       "nombre": "nombre completo del cliente",
-      "telefono": "número de teléfono",
-      "direccion": "dirección completa",
-      "ciudad": "ciudad o municipio",
-      "producto": "descripción del producto o contenido",
-      "valorRecaudo": "valor a recaudar en números"
+      "telefono": "número de teléfono del cliente, Es un número de 10 dígitos Que comienza por 3 y en ocasiones es precedido por un +57",
+      "direccion": "dirección completa de entrega, O en ocasiones colocar oficina Principal de inter rapidísimo Si dice oficina",
+      "ciudad": "ciudad o municipio de Colombia donde se realiza la entrega ",
+      "producto": "descripción del producto o contenido del pedido",
+      "valorRecaudo": "valor a recaudar en números sin símbolos"
     }
     
-    Si un dato no está disponible en ninguna fuente, usa null.
-    No incluyas explicaciones, solo el JSON.
+    Si un dato no está disponible en ninguna fuente o no es claro o hay posibilidad de confusión, usa null.
+    Devuelve SOLO el JSON, sin explicaciones ni texto adicional.
   `;
 
   const result = await model.generateContent([prompt, imagePart]);
-  const text = result.response.text();
+  const text = result.response.text().trim();
 
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  // Limpiar posibles backticks que Gemini a veces agrega
+  const clean = text.replace(/```json|```/g, '').trim();
+  const jsonMatch = clean.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('Gemini no devolvió un JSON válido');
 
   return JSON.parse(jsonMatch[0]);
@@ -101,7 +105,7 @@ async function escribirEnSheets(datos, imagenUrl) {
 
   const sheets = google.sheets({ version: 'v4', auth });
 
-  // Obtener encabezados para buscar columnas por nombre
+  // Obtener encabezados
   const headersResponse = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
     range: 'Pedidos!1:1'
@@ -109,19 +113,19 @@ async function escribirEnSheets(datos, imagenUrl) {
 
   const headers = headersResponse.data.values[0];
 
-  // Mapeo de columnas
+  // Mapeo de columnas por nombre
   const columnMap = {
-    'Nombre': datos.nombre,
-    'Teléfono': datos.telefono,
-    'Dirección': datos.direccion,
-    'Ciudad/Municipio': datos.ciudad,
-    'Contenido/Producto': datos.producto,
-    'Valor Recaudo ($)': datos.valorRecaudo,
-    'Imagen': imagenUrl
+    'Nombre': datos.nombre || '',
+    'Teléfono': datos.telefono || '',
+    'Dirección': datos.direccion || '',
+    'Ciudad/Municipio': datos.ciudad || '',
+    'Contenido/Producto': datos.producto || '',
+    'Valor Recaudo ($)': datos.valorRecaudo || '',
+    'Imagen': imagenUrl || ''
   };
 
-  // Construir la fila según el orden de los encabezados
-  const fila = headers.map(header => columnMap[header] || '');
+  // Construir fila según orden real de encabezados
+  const fila = headers.map(header => columnMap[header] !== undefined ? columnMap[header] : '');
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
@@ -130,58 +134,126 @@ async function escribirEnSheets(datos, imagenUrl) {
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [fila] }
   });
+
+  console.log('Fila escrita en Sheets:', fila);
 }
 
-// Webhook principal
-app.post('/webhook', async (req, res) => {
+// Procesar sesión completa cuando llega el punto final
+async function procesarSesion(conversationId) {
+  const sesion = sesiones[conversationId];
+  if (!sesion) return;
+
   try {
-    const body = req.body;
+    console.log(`Procesando sesión de conversación ${conversationId}`);
 
-    // Verificar que sea un mensaje entrante
-    if (body.event !== 'message_created') return res.sendStatus(200);
-    if (body.message_type !== 'incoming') return res.sendStatus(200);
-
-    const mensaje = body.content || '';
-    const numero = body.meta?.sender?.phone_number || '';
-
-    // Filtros de seguridad
-    if (!numeroAutorizado(numero)) return res.sendStatus(200);
-    if (!mensaje.includes('#p')) return res.sendStatus(200);
-    if (!mensaje.includes('.')) return res.sendStatus(200);
-
-    // Verificar que tenga imagen adjunta
-    const adjuntos = body.attachments || [];
-    const imagen = adjuntos.find(a => a.file_type === 'image');
-    if (!imagen) return res.sendStatus(200);
-
-    // Extraer texto adicional
-    const textoAdicional = extraerTexto(mensaje);
+    if (!sesion.imagen) {
+      console.log('Sesión sin imagen, descartando');
+      delete sesiones[conversationId];
+      return;
+    }
 
     // Descargar imagen
-    const imageBuffer = await descargarImagen(imagen.data_url);
+    const imageBuffer = await descargarImagen(sesion.imagen);
 
     // Subir imagen a Cloud Storage
-    const filename = `pedido_${Date.now()}.jpg`;
+    const filename = `pedido_${conversationId}_${Date.now()}.jpg`;
     const imagenUrl = await subirImagen(imageBuffer, filename);
 
     // Procesar con Gemini
+    const textoAdicional = sesion.textos.join(' ');
     const datos = await procesarConGemini(imageBuffer, textoAdicional);
 
     // Escribir en Sheets
     await escribirEnSheets(datos, imagenUrl);
 
     console.log('Pedido procesado exitosamente:', datos);
-    res.sendStatus(200);
 
   } catch (error) {
-    console.error('Error procesando pedido:', error);
-    res.sendStatus(500);
+    console.error(`Error procesando sesión ${conversationId}:`, error.message);
+  } finally {
+    delete sesiones[conversationId];
+  }
+}
+
+// Webhook principal
+app.post('/webhook', async (req, res) => {
+  // Responder inmediatamente a Chatwoot
+  res.sendStatus(200);
+
+  try {
+    const body = req.body;
+
+    // Solo procesar eventos de mensaje creado
+    if (body.event !== 'message_created') return;
+
+    // Solo mensajes entrantes (message_type 0 = incoming en Chatwoot)
+    if (body.message_type !== 0 && body.message_type !== 'incoming') return;
+
+    // Verificar número autorizado
+    const numero = body.meta?.sender?.phone_number || '';
+    if (!numeroAutorizado(numero)) return;
+
+    const conversationId = body.conversation?.id;
+    if (!conversationId) return;
+
+    const contenido = body.content || '';
+    const adjuntos = body.attachments || [];
+    const imagen = adjuntos.find(a => a.file_type === 'image');
+
+    console.log(`Mensaje recibido - Conv: ${conversationId} - Contenido: "${contenido}" - Imagen: ${!!imagen}`);
+
+    // TRIGGER 1: Detectar #p — abrir sesión
+    if (contenido.includes('#p')) {
+      console.log(`Abriendo sesión para conversación ${conversationId}`);
+      sesiones[conversationId] = {
+        textos: [],
+        imagen: null,
+        timestamp: Date.now()
+      };
+
+      // Limpiar sesiones viejas de más de 10 minutos
+      Object.keys(sesiones).forEach(id => {
+        if (Date.now() - sesiones[id].timestamp > 600000) {
+          console.log(`Limpiando sesión expirada: ${id}`);
+          delete sesiones[id];
+        }
+      });
+      return;
+    }
+
+    // Si no hay sesión abierta para esta conversación, ignorar
+    if (!sesiones[conversationId]) return;
+
+    // Acumular imagen si llega
+    if (imagen) {
+      sesiones[conversationId].imagen = imagen.data_url;
+      console.log(`Imagen guardada para conversación ${conversationId}`);
+    }
+
+    // Acumular texto si no es el punto final
+    if (contenido && contenido.trim() !== '.') {
+      sesiones[conversationId].textos.push(contenido.trim());
+      console.log(`Texto acumulado para conversación ${conversationId}: "${contenido}"`);
+    }
+
+    // TRIGGER 2: Detectar punto final — procesar todo
+    if (contenido.trim() === '.') {
+      console.log(`Punto final detectado, procesando conversación ${conversationId}`);
+      await procesarSesion(conversationId);
+    }
+
+  } catch (error) {
+    console.error('Error en webhook:', error.message);
   }
 });
 
 // Health check
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', servicio: 'webhook-pedidos' });
+  res.json({ 
+    status: 'ok', 
+    servicio: 'webhook-pedidos',
+    sesionesActivas: Object.keys(sesiones).length
+  });
 });
 
 const PORT = process.env.PORT || 8080;
