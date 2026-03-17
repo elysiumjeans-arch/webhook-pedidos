@@ -148,15 +148,19 @@ async function escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, text
   console.log('Fila escrita exitosamente en fila:', ultimaFila);
 }
 
-async function procesarSesion(conversationId) {
-  const sesion = sesiones[conversationId];
+// ─────────────────────────────────────────────────────────────────────────────
+// procesarSesion recibe el objeto de sesión directamente (no lo busca en
+// sesiones[]). Así no tiene ninguna dependencia sobre sesiones[] y no puede
+// borrar accidentalmente una sesión nueva que se haya creado mientras esta
+// función estaba corriendo de forma asíncrona.
+// ─────────────────────────────────────────────────────────────────────────────
+async function procesarSesion(sesion, conversationId) {
   if (!sesion) return;
 
   try {
     console.log(`Procesando sesión de conversación ${conversationId}`);
     if (!sesion.imagen) {
       console.log('Sesión sin imagen, descartando');
-      delete sesiones[conversationId];
       return;
     }
 
@@ -170,8 +174,6 @@ async function procesarSesion(conversationId) {
 
   } catch (error) {
     console.error(`Error procesando sesión ${conversationId}:`, error.message);
-  } finally {
-    delete sesiones[conversationId];
   }
 }
 
@@ -205,9 +207,20 @@ app.post('/webhook', async (req, res) => {
           clearTimeout(sesiones[conversationId].timer);
           console.log(`Timer anterior cancelado para conversación ${conversationId}`);
         }
+
         if (sesiones[conversationId].imagen) {
+          // FIX RACE CONDITION:
+          // Se copia la sesión anterior a una variable local y se elimina de
+          // sesiones[] ANTES de llamar procesarSesion. De esta forma, cuando
+          // procesarSesion termine (de forma asíncrona, sin await), ya no
+          // tiene nada que borrar en sesiones[] y no puede afectar la sesión
+          // nueva que se crea justo después.
           console.log(`Procesando sesión anterior antes de abrir nueva`);
-          procesarSesion(conversationId);
+          const sesionAnterior = sesiones[conversationId];
+          delete sesiones[conversationId];
+          procesarSesion(sesionAnterior, conversationId); // sin await — intencional
+        } else {
+          delete sesiones[conversationId];
         }
       }
 
@@ -238,9 +251,15 @@ app.post('/webhook', async (req, res) => {
         timestamp: Date.now(),
         fechaPedido: fechaPedido,
         timer: setTimeout(() => {
-          if (sesiones[conversationId] && sesiones[conversationId].sessionId === sessionId) {
+          // FIX RACE CONDITION:
+          // El timer también extrae y borra la sesión antes de procesarla,
+          // por la misma razón: evitar que procesarSesion tenga referencia
+          // a sesiones[] y pueda borrar algo que no le corresponde.
+          const sesionActual = sesiones[conversationId];
+          if (sesionActual && sesionActual.sessionId === sessionId) {
             console.log(`Timer alcanzado, procesando automáticamente conversación ${conversationId}`);
-            procesarSesion(conversationId);
+            delete sesiones[conversationId];
+            procesarSesion(sesionActual, conversationId);
           }
         }, 19000)
       };
@@ -268,20 +287,26 @@ app.post('/webhook', async (req, res) => {
       const currentSessionId = sesiones[conversationId].sessionId;
       if (sesiones[conversationId].timer) clearTimeout(sesiones[conversationId].timer);
       sesiones[conversationId].timer = setTimeout(() => {
-        if (sesiones[conversationId] && sesiones[conversationId].sessionId === currentSessionId) {
+        // FIX RACE CONDITION: mismo patrón — extraer y borrar antes de procesar
+        const sesionActual = sesiones[conversationId];
+        if (sesionActual && sesionActual.sessionId === currentSessionId) {
           console.log(`Timer alcanzado tras texto, procesando automáticamente conversación ${conversationId}`);
-          procesarSesion(conversationId);
+          delete sesiones[conversationId];
+          procesarSesion(sesionActual, conversationId);
         }
       }, 19000);
     }
 
     // TRIGGER 2: Detectar punto final — procesar todo
     if (contenido.trim().replace(/\s+/g, '').endsWith('..')) {
-      if (sesiones[conversationId] && sesiones[conversationId].timer) {
+      if (sesiones[conversationId]?.timer) {
         clearTimeout(sesiones[conversationId].timer);
       }
+      // FIX RACE CONDITION: mismo patrón — extraer y borrar antes de procesar
+      const sesionFinal = sesiones[conversationId];
+      delete sesiones[conversationId];
       console.log(`Punto final detectado, procesando conversación ${conversationId}`);
-      await procesarSesion(conversationId);
+      await procesarSesion(sesionFinal, conversationId); // await aquí sí tiene sentido (trigger manual)
     }
 
   } catch (error) {
