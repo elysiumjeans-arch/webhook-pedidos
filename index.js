@@ -226,7 +226,7 @@ app.post('/webhook', async (req, res) => {
     console.log(`Mensaje recibido - Conv: ${conversationId} - Contenido: "${contenido}" - Imagen: ${!!imagen}`);
 
     // TRIGGER 1: Detectar #p — abrir sesión
-    if (contenido.includes('#p')) {
+    if (contenido.includes('+p')) {
       console.log(`Abriendo sesión para conversación ${conversationId}`);
       sesiones[conversationId] = {
         textos: [],
