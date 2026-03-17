@@ -275,7 +275,7 @@ app.post('/webhook', async (req, res) => {
           console.log(`Timer de 1 minuto alcanzado, procesando automáticamente conversación ${conversationId}`);
           procesarSesion(conversationId);
         }
-      }, 60000);
+      }, 39000);
 
       return;
     
@@ -296,7 +296,7 @@ app.post('/webhook', async (req, res) => {
           console.log(`Timer de 1 minuto alcanzado tras texto, procesando automáticamente conversación ${conversationId}`);
           procesarSesion(conversationId);
         }
-      }, 60000);
+      }, 39000);
     }
 
     // TRIGGER 2: Detectar punto final — procesar todo
