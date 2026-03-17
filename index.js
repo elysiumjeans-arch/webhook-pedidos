@@ -226,13 +226,17 @@ app.post('/webhook', async (req, res) => {
     console.log(`Mensaje recibido - Conv: ${conversationId} - Contenido: "${contenido}" - Imagen: ${!!imagen}`);
 
     // TRIGGER 1: Detectar #p — abrir sesión
+    // TRIGGER 1: Detectar +p — cerrar sesión anterior si existe y abrir nueva
     if (contenido.includes('+p')) {
-      console.log(`Abriendo sesión para conversación ${conversationId}`);
-      sesiones[conversationId] = {
-        textos: [],
-        imagen: null,
-        timestamp: Date.now()
-      };
+    if (sesiones[conversationId]) {
+      console.log(`Cerrando sesión anterior para conversación ${conversationId}`);
+    }
+    console.log(`Abriendo sesión para conversación ${conversationId}`);
+    sesiones[conversationId] = {
+      textos: [],
+      imagen: null,
+      timestamp: Date.now()
+    };
 
       // Limpiar sesiones viejas de más de 10 minutos
       Object.keys(sesiones).forEach(id => {
