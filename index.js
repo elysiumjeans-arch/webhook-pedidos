@@ -81,7 +81,7 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
       "direccion": "dirección completa de entrega, o en ocasiones colocar oficina principal de interrapidísimo si dice oficina",
       "ciudad": "ciudad o municipio de Colombia donde se realiza la entrega",
       "producto": "descripción del producto o contenido del pedido, irá primero la talla y después la descripción del producto",
-      "valorRecaudo": "valor a recaudar en números sin símbolos. Los valores están siempre después del producto. Todos los valores se dan en miles. Es decir que si llegas a ver por ejemplo 130, colocarás 130000. Si el texto menciona ya pagó, pagado, pago, ya canceló o similar, coloca 0.",
+      "valorRecaudo": "valor a recaudar en números sin símbolos. Los valores están siempre después de la referencia del producto. Todos los valores se dan en miles. Es decir que si llegas a ver por ejemplo 130, colocarás 130000. Si el texto menciona ya pago, pagado, pago, ya canceló o similar, coloca 0.",
       "tipo": "tipo de pedido según el texto: VENTA si es pedido normal o tiene valor a cobrar o menciona ya pagó o pagado, CAMBIO si menciona cambio o cambiar, ERROR si menciona error o botones o falla, CAMBIO Y RECOGER si menciona recoger prenda o cambio y recoger. Por defecto VENTA si no hay ninguna indicación."
     }
     
@@ -106,7 +106,7 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
 }
 
 // Escribir en Google Sheets
-async function escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen) {
+async function escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, textoAdicional) {
   const auth = new google.auth.GoogleAuth({
     scopes: ['https://www.googleapis.com/auth/spreadsheets']
   });
@@ -149,7 +149,7 @@ async function escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen) {
     'Imagen': imagenUrl || '',
     'Tipo': datos.tipo || 'VENTA',
     'Fecha Pedido': fechaPedido || '',
-    'Texto Imagen': textoImagen || ''
+    'Texto Imagen': textoImagen || textoAdicional || ''
   };
 
   // Construir fila según orden real de encabezados
@@ -193,7 +193,7 @@ async function procesarSesion(conversationId) {
     const datos = await procesarConGemini(imageBuffer, textoAdicional);
 
     // Escribir en Sheets
-    await escribirEnSheets(datos, imagenUrl, sesion.fechaPedido, sesion.textoImagen);
+    await escribirEnSheets(datos, imagenUrl, sesion.fechaPedido, sesion.textoImagen, textoAdicional);
 
     console.log('Pedido procesado exitosamente:', datos);
 
