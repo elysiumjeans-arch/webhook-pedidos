@@ -96,7 +96,13 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
   const jsonMatch = clean.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('Gemini no devolvió un JSON válido');
 
-  return JSON.parse(jsonMatch[0]);
+  const datos = JSON.parse(jsonMatch[0]);
+
+  if (datos.valorRecaudo === null && textoAdicional.match(/ya pag|pagado|pago|cancel/i)) {
+    datos.valorRecaudo = 0;
+  }
+
+  return datos;
 }
 
 // Escribir en Google Sheets
@@ -139,7 +145,7 @@ async function escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen) {
     'Dirección': datos.direccion || '',
     'Ciudad/Municipio': datos.ciudad || '',
     'Contenido/Producto': datos.producto || '',
-    'Valor Recaudo ($)': datos.valorRecaudo || '',
+    'Valor Recaudo ($)': datos.valorRecaudo !== null && datos.valorRecaudo !== undefined ? datos.valorRecaudo : '',
     'Imagen': imagenUrl || '',
     'Tipo': datos.tipo || 'VENTA',
     'Fecha Pedido': fechaPedido || '',
@@ -232,7 +238,7 @@ app.post('/webhook', async (req, res) => {
       sesiones[conversationId] = {
         textos: [],
         imagen: imagen.data_url,
-        textoImagen: contenido || null,
+        textoImagen: contenido || body.attachments?.[0]?.caption || null,
         timestamp: Date.now(),
         fechaPedido: null
       };
