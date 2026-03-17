@@ -82,7 +82,7 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
       "direccion": "dirección completa de entrega, O en ocasiones colocar oficina Principal de inter rapidísimo Si dice oficina",
       "ciudad": "ciudad o municipio de Colombia donde se realiza la entrega ",
       "producto": "descripción del producto o contenido del pedido",
-      "valorRecaudo": "valor a recaudar en números sin símbolos"
+      "valorRecaudo": "valor a recaudar en números sin símbolos, Todos los valores aparecen en miles. Es decir que si llegas a ver por ejemplo 130, colocarás 130000.. Si el texto menciona 'ya pagó', 'pagado', 'pago', 'ya canceló' o similar, coloca 0. "
     }
     
     Si un dato no está disponible en ninguna fuente o no es claro o hay posibilidad de confusión, usa null.
