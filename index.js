@@ -77,13 +77,14 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
     
     Extrae los siguientes datos y devuelve SOLO un JSON válido sin texto adicional ni backticks:
     {
-      "nombre": "nombre completo del cliente",
+      "nombre": "nombre completo del cliente/",
       "telefono": "número de teléfono del cliente, Es un número de 10 dígitos Que comienza por 3 y en ocasiones es precedido por un +57",
       "direccion": "dirección completa de entrega, O en ocasiones colocar oficina Principal de inter rapidísimo Si dice oficina",
       "ciudad": "ciudad o municipio de Colombia donde se realiza la entrega ",
-      "producto": "descripción del producto o contenido del pedido, por lo general ira primero la talla y despues la descripcion del producto",
-      "valorRecaudo": "valor a recaudar en números sin símbolos, Todos los valores aparecen en miles. Es decir que si llegas a ver por ejemplo 130, colocarás 130000.. Si el texto menciona 'ya pagó', 'pagado', 'pago', 'ya canceló' o similar, coloca 0. "
-    }
+      "producto": "descripción del producto o contenido del pedido, ira primero la talla y despues la descripcion del producto",
+      "valorRecaudo": "valor a recaudar en números sin símbolos,los valores estan siempre despues del producto . Todos los valores se dan en miles. Es decir que si llegas a ver por ejemplo 130, colocarás 130000.. Si el texto menciona 'ya pagó', 'pagado', 'pago', 'ya canceló' o similar, coloca 0. "
+      "tipo": "tipo de pedido según el texto: VENTA si es pedido normal o tiene valor a cobrar o menciona ya pagó o pagado, CAMBIO si menciona cambio o cambiar, ERROR si menciona error o botones o falla, CAMBIO Y RECOGER si menciona recoger prenda o cambio y recoger. Por defecto VENTA si no hay ninguna indicación."
+      }
     
     Si un dato no está disponible en ninguna fuente o no es claro o hay posibilidad de confusión, usa null.
     Devuelve SOLO el JSON, sin explicaciones ni texto adicional.
@@ -101,7 +102,7 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
 }
 
 // Escribir en Google Sheets
-async function escribirEnSheets(datos, imagenUrl) {
+async function escribirEnSheets(datos, imagenUrl, fechaPedido) {
   const auth = new google.auth.GoogleAuth({
     scopes: ['https://www.googleapis.com/auth/spreadsheets']
   });
@@ -141,7 +142,9 @@ async function escribirEnSheets(datos, imagenUrl) {
     'Ciudad/Municipio': datos.ciudad || '',
     'Contenido/Producto': datos.producto || '',
     'Valor Recaudo ($)': datos.valorRecaudo || '',
-    'Imagen': imagenUrl || ''
+    'Imagen': imagenUrl || '',
+    'Tipo': datos.tipo || 'VENTA',
+    'Fecha Pedido': sesion.fechaPedido || '',
   };
 
   // Construir fila según orden real de encabezados
@@ -185,7 +188,7 @@ async function procesarSesion(conversationId) {
     const datos = await procesarConGemini(imageBuffer, textoAdicional);
 
     // Escribir en Sheets
-    await escribirEnSheets(datos, imagenUrl);
+    await escribirEnSheets(datos, imagenUrl, sesion.fechaPedido);
 
     console.log('Pedido procesado exitosamente:', datos);
 
@@ -235,8 +238,9 @@ app.post('/webhook', async (req, res) => {
     sesiones[conversationId] = {
       textos: [],
       imagen: null,
-      timestamp: Date.now()
-    };
+      timestamp: Date.now(),
+      fechaPedido: null
+  };
 
       // Limpiar sesiones viejas de más de 10 minutos
       Object.keys(sesiones).forEach(id => {
@@ -254,6 +258,9 @@ app.post('/webhook', async (req, res) => {
     // Acumular imagen si llega
     if (imagen) {
       sesiones[conversationId].imagen = imagen.data_url;
+      sesiones[conversationId].fechaPedido = body.created_at 
+        ? new Date(body.created_at * 1000).toLocaleString('es-CO', {timeZone: 'America/Bogota'})
+        : new Date().toLocaleString('es-CO', {timeZone: 'America/Bogota'});
       console.log(`Imagen guardada para conversación ${conversationId}`);
     }
 
