@@ -139,6 +139,8 @@ async function escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, text
   console.log('Escribiendo en fila:', ultimaFila);
 
   // Mapeo de columnas por nombre
+  console.log('textoImagen:', JSON.stringify(textoImagen));
+  console.log('textoAdicional:', JSON.stringify(textoAdicional));
   const columnMap = {
     'Nombre': datos.nombre || '',
     'Teléfono': datos.telefono || '',
