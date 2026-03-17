@@ -22,10 +22,8 @@ const NUMEROS_AUTORIZADOS = [
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const storage = new Storage();
 
-// Memoria temporal por conversación
 const sesiones = {};
 
-// Verificar número autorizado
 function numeroAutorizado(numero) {
   if (!numero) return false;
   return NUMEROS_AUTORIZADOS.some(n => 
@@ -33,7 +31,6 @@ function numeroAutorizado(numero) {
   );
 }
 
-// Descargar imagen de Chatwoot
 async function descargarImagen(url) {
   const response = await axios.get(url, {
     headers: { 'api_access_token': CHATWOOT_TOKEN },
@@ -42,12 +39,10 @@ async function descargarImagen(url) {
   return Buffer.from(response.data);
 }
 
-// Subir imagen a Cloud Storage
 async function subirImagen(buffer, filename) {
   const bucket = storage.bucket(BUCKET_NAME);
   const file = bucket.file(`pedidos/${filename}`);
   await file.save(buffer, { contentType: 'image/jpeg' });
-  
   const [url] = await file.getSignedUrl({
     action: 'read',
     expires: Date.now() + 7 * 24 * 60 * 60 * 1000
@@ -55,7 +50,6 @@ async function subirImagen(buffer, filename) {
   return url;
 }
 
-// Procesar con Gemini
 async function procesarConGemini(imageBuffer, textoAdicional) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
@@ -91,56 +85,44 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
 
   const result = await model.generateContent([prompt, imagePart]);
   const text = result.response.text().trim();
-
   const clean = text.replace(/```json|```/g, '').trim();
   const jsonMatch = clean.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('Gemini no devolvió un JSON válido');
 
   const datos = JSON.parse(jsonMatch[0]);
-
   if (datos.valorRecaudo === null && textoAdicional.match(/ya pag|pagado|pago|cancel/i)) {
     datos.valorRecaudo = 0;
   }
-
   return datos;
 }
 
-// Escribir en Google Sheets
 async function escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, textoAdicional) {
   const auth = new google.auth.GoogleAuth({
     scopes: ['https://www.googleapis.com/auth/spreadsheets']
   });
-
   const sheets = google.sheets({ version: 'v4', auth });
 
-  // Obtener encabezados
   const headersResponse = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
     range: 'Pedidos!1:1'
   });
-
   const headers = headersResponse.data.values[0];
   console.log('Encabezados encontrados:', JSON.stringify(headers));
 
-  // Buscar última fila vacía en columna Nombre
   const nombreCol = headers.indexOf('Nombre');
   if (nombreCol === -1) throw new Error('No se encontró la columna Nombre');
 
   const colLetra = String.fromCharCode(65 + nombreCol);
-  const nombreRange = `Pedidos!${colLetra}:${colLetra}`;
-  
   const nombresResponse = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
-    range: nombreRange
+    range: `Pedidos!${colLetra}:${colLetra}`
   });
-
-  const nombresData = nombresResponse.data.values || [];
-  const ultimaFila = nombresData.length + 1;
+  const ultimaFila = (nombresResponse.data.values || []).length + 1;
   console.log('Escribiendo en fila:', ultimaFila);
 
-  // Mapeo de columnas por nombre
   console.log('textoImagen:', JSON.stringify(textoImagen));
   console.log('textoAdicional:', JSON.stringify(textoAdicional));
+
   const columnMap = {
     'Nombre': datos.nombre || '',
     'Teléfono': datos.telefono || '',
@@ -154,49 +136,36 @@ async function escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, text
     'Texto Imagen': textoImagen || textoAdicional || ''
   };
 
-  // Construir fila según orden real de encabezados
   const fila = headers.map(header => columnMap[header] !== undefined ? columnMap[header] : null);
   console.log('Fila a escribir:', JSON.stringify(fila));
 
-  // Escribir en la fila exacta
   await sheets.spreadsheets.values.update({
     spreadsheetId: SPREADSHEET_ID,
     range: `Pedidos!A${ultimaFila}`,
     valueInputOption: 'RAW',
     requestBody: { values: [fila] }
   });
-
   console.log('Fila escrita exitosamente en fila:', ultimaFila);
 }
 
-// Procesar sesión completa cuando llega el punto final
 async function procesarSesion(conversationId) {
   const sesion = sesiones[conversationId];
   if (!sesion) return;
 
   try {
     console.log(`Procesando sesión de conversación ${conversationId}`);
-
     if (!sesion.imagen) {
       console.log('Sesión sin imagen, descartando');
       delete sesiones[conversationId];
       return;
     }
 
-    // Descargar imagen
     const imageBuffer = await descargarImagen(sesion.imagen);
-
-    // Subir imagen a Cloud Storage
     const filename = `pedido_${conversationId}_${Date.now()}.jpg`;
     const imagenUrl = await subirImagen(imageBuffer, filename);
-
-    // Procesar con Gemini
     const textoAdicional = sesion.textos.join(' ');
     const datos = await procesarConGemini(imageBuffer, textoAdicional);
-
-    // Escribir en Sheets
     await escribirEnSheets(datos, imagenUrl, sesion.fechaPedido, sesion.textoImagen, textoAdicional);
-
     console.log('Pedido procesado exitosamente:', datos);
 
   } catch (error) {
@@ -206,7 +175,6 @@ async function procesarSesion(conversationId) {
   }
 }
 
-// Webhook principal
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 
@@ -230,7 +198,7 @@ app.post('/webhook', async (req, res) => {
 
     console.log(`Mensaje recibido - Conv: ${conversationId} - Contenido: "${contenido}" - Imagen: ${!!imagen}`);
 
-// TRIGGER 1: Imagen detectada — cerrar sesión anterior y abrir nueva
+    // TRIGGER 1: Imagen detectada — cerrar sesión anterior y abrir nueva
     if (imagen) {
       if (sesiones[conversationId]) {
         if (sesiones[conversationId].timer) {
@@ -242,15 +210,9 @@ app.post('/webhook', async (req, res) => {
           procesarSesion(conversationId);
         }
       }
+
       console.log(`Abriendo sesión para conversación ${conversationId}`);
-      sesiones[conversationId] = {
-        textos: [],
-        imagen: imagen.data_url,
-        textoImagen: contenido || body.attachments?.[0]?.caption || null,
-        timestamp: Date.now(),
-        fechaPedido: null
-      };
-    
+
       let fechaRaw = body.created_at;
       let fechaObj;
       if (!fechaRaw) {
@@ -262,12 +224,25 @@ app.post('/webhook', async (req, res) => {
       } else {
         fechaObj = new Date();
       }
-      sesiones[conversationId].fechaPedido = isNaN(fechaObj.getTime())
+      const fechaPedido = isNaN(fechaObj.getTime())
         ? new Date().toLocaleString('es-CO', {timeZone: 'America/Bogota'})
         : fechaObj.toLocaleString('es-CO', {timeZone: 'America/Bogota'});
-    
+
+      sesiones[conversationId] = {
+        textos: [],
+        imagen: imagen.data_url,
+        textoImagen: contenido || body.attachments?.[0]?.caption || null,
+        timestamp: Date.now(),
+        fechaPedido: fechaPedido,
+        timer: setTimeout(() => {
+          if (sesiones[conversationId]) {
+            console.log(`Timer alcanzado, procesando automáticamente conversación ${conversationId}`);
+            procesarSesion(conversationId);
+          }
+        }, 19000)
+      };
+
       // Limpiar sesiones viejas de más de 10 minutos
-// Limpiar sesiones viejas de más de 10 minutos
       Object.keys(sesiones).forEach(id => {
         if (Date.now() - sesiones[id].timestamp > 600000) {
           console.log(`Limpiando sesión expirada: ${id}`);
@@ -275,40 +250,30 @@ app.post('/webhook', async (req, res) => {
         }
       });
 
-      // Timer de 1 minuto — si no llega .. procesa automáticamente
-// Timer de 39 segundos — si no llega .. procesa automáticamente
-      if (sesiones[conversationId].timer) clearTimeout(sesiones[conversationId].timer);
-      sesiones[conversationId].timer = setTimeout(() => {
-        if (sesiones[conversationId]) {
-          console.log(`Timer alcanzado, procesando automáticamente conversación ${conversationId}`);
-          procesarSesion(conversationId);
-        }
-      }, 29000);
-
       return;
-    
+    }
+
     // Si no hay sesión abierta para esta conversación, ignorar
     if (!sesiones[conversationId]) return;
 
-      
-
     // Acumular texto si no termina en ..
     if (contenido && contenido.trim().length > 0 && !contenido.trim().replace(/\s+/g, '').endsWith('..')) {
-          sesiones[conversationId].textos.push(contenido.trim());
-          console.log(`Texto acumulado para conversación ${conversationId}: "${contenido}"`);
-    
-          // Reiniciar timer solo si hay texto real
-          if (sesiones[conversationId].timer) clearTimeout(sesiones[conversationId].timer);
-          sesiones[conversationId].timer = setTimeout(() => {
-            if (sesiones[conversationId]) {
-              console.log(`Timer alcanzado tras texto, procesando automáticamente conversación ${conversationId}`);
-              procesarSesion(conversationId);
-            }
-          }, 19000);
+      sesiones[conversationId].textos.push(contenido.trim());
+      console.log(`Texto acumulado para conversación ${conversationId}: "${contenido}"`);
+
+      // Reiniciar timer solo si hay texto real
+      if (sesiones[conversationId].timer) clearTimeout(sesiones[conversationId].timer);
+      sesiones[conversationId].timer = setTimeout(() => {
+        if (sesiones[conversationId]) {
+          console.log(`Timer alcanzado tras texto, procesando automáticamente conversación ${conversationId}`);
+          procesarSesion(conversationId);
         }
+      }, 19000);
+    }
 
     // TRIGGER 2: Detectar punto final — procesar todo
     if (contenido.trim().replace(/\s+/g, '').endsWith('..')) {
+      if (sesiones[conversationId].timer) clearTimeout(sesiones[conversationId].timer);
       console.log(`Punto final detectado, procesando conversación ${conversationId}`);
       await procesarSesion(conversationId);
     }
@@ -318,7 +283,6 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Health check
 app.get('/', (req, res) => {
   res.json({ 
     status: 'ok', 
