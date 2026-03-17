@@ -142,7 +142,7 @@ async function escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, text
   await sheets.spreadsheets.values.update({
     spreadsheetId: SPREADSHEET_ID,
     range: `Pedidos!A${ultimaFila}`,
-    valueInputOption: 'RAW',
+    valueInputOption: 'USER_ENTERED',
     requestBody: { values: [fila] }
   });
   console.log('Fila escrita exitosamente en fila:', ultimaFila);
