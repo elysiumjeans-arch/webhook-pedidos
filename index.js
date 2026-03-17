@@ -58,7 +58,7 @@ async function subirImagen(buffer, filename) {
 
 // Procesar con Gemini
 async function procesarConGemini(imageBuffer, textoAdicional) {
-  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
   const imagePart = {
     inlineData: {
@@ -190,10 +190,12 @@ app.post('/webhook', async (req, res) => {
     if (body.event !== 'message_created') return;
 
     // Solo mensajes entrantes (message_type 0 = incoming en Chatwoot)
-    if (body.message_type !== 0 && body.message_type !== 'incoming') return;
+    if (body.message_type !== 0 && body.message_type !== 'incoming' && body.message_type !== 'outgoing') return;
 
     // Verificar número autorizado
-    const numero = body.meta?.sender?.phone_number || '';
+    const numero = body.meta?.sender?.phone_number || 
+               body.conversation?.meta?.sender?.phone_number ||
+               body.sender?.phone_number || '';
     if (!numeroAutorizado(numero)) return;
 
     const conversationId = body.conversation?.id;
