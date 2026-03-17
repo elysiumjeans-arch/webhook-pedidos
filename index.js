@@ -100,7 +100,7 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
 }
 
 // Escribir en Google Sheets
-async function escribirEnSheets(datos, imagenUrl, fechaPedido) {
+async function escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen) {
   const auth = new google.auth.GoogleAuth({
     scopes: ['https://www.googleapis.com/auth/spreadsheets']
   });
@@ -142,7 +142,8 @@ async function escribirEnSheets(datos, imagenUrl, fechaPedido) {
     'Valor Recaudo ($)': datos.valorRecaudo || '',
     'Imagen': imagenUrl || '',
     'Tipo': datos.tipo || 'VENTA',
-    'Fecha Pedido': fechaPedido || ''
+    'Fecha Pedido': fechaPedido || '',
+    'Texto Imagen': textoImagen || ''
   };
 
   // Construir fila según orden real de encabezados
@@ -186,7 +187,7 @@ async function procesarSesion(conversationId) {
     const datos = await procesarConGemini(imageBuffer, textoAdicional);
 
     // Escribir en Sheets
-    await escribirEnSheets(datos, imagenUrl, sesion.fechaPedido);
+    await escribirEnSheets(datos, imagenUrl, sesion.fechaPedido, sesion.textoImagen);
 
     console.log('Pedido procesado exitosamente:', datos);
 
@@ -230,6 +231,7 @@ app.post('/webhook', async (req, res) => {
       sesiones[conversationId] = {
         textos: [],
         imagen: null,
+        textoImagen: null,
         timestamp: Date.now(),
         fechaPedido: null
       };
@@ -250,8 +252,24 @@ app.post('/webhook', async (req, res) => {
     // Acumular imagen si llega
     if (imagen) {
       sesiones[conversationId].imagen = imagen.data_url;
-       sesiones[conversationId].fechaPedido = new Date().toLocaleString('es-CO', {timeZone: 'America/Bogota'});
-      console.log(`Imagen guardada para conversación ${conversationId}`);
+      sesiones[conversationId].textoImagen = contenido || null;
+
+      let fechaRaw = body.created_at;
+      let fechaObj;
+      if (!fechaRaw) {
+        fechaObj = new Date();
+      } else if (typeof fechaRaw === 'number') {
+        fechaObj = new Date(fechaRaw * 1000);
+      } else if (typeof fechaRaw === 'string') {
+        fechaObj = new Date(fechaRaw.replace(' UTC', 'Z'));
+      } else {
+        fechaObj = new Date();
+      }
+      sesiones[conversationId].fechaPedido = isNaN(fechaObj.getTime())
+        ? new Date().toLocaleString('es-CO', {timeZone: 'America/Bogota'})
+        : fechaObj.toLocaleString('es-CO', {timeZone: 'America/Bogota'});
+
+      console.log(`Imagen guardada para conversación ${conversationId} - Fecha: ${sesiones[conversationId].fechaPedido}`);
     }
 
     // Acumular texto si no termina en ..
