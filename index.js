@@ -116,9 +116,24 @@ async function escribirEnSheets(datos, imagenUrl) {
 
   const headers = headersResponse.data.values[0];
   console.log('Encabezados encontrados:', JSON.stringify(headers));
-  console.log('Datos a escribir:', JSON.stringify(columnMap));
 
-  // Mapeo de columnas por nombre
+  // Buscar última fila vacía en columna Nombre
+  const nombreCol = headers.indexOf('Nombre');
+  if (nombreCol === -1) throw new Error('No se encontró la columna Nombre');
+
+  const colLetra = String.fromCharCode(65 + nombreCol);
+  const nombreRange = `Pedidos!${colLetra}:${colLetra}`;
+  
+  const nombresResponse = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range: nombreRange
+  });
+
+  const nombresData = nombresResponse.data.values || [];
+  const ultimaFila = nombresData.length + 1;
+  console.log('Escribiendo en fila:', ultimaFila);
+
+  // Mapeo de columnas
   const columnMap = {
     'Nombre': datos.nombre || '',
     'Teléfono': datos.telefono || '',
@@ -131,16 +146,17 @@ async function escribirEnSheets(datos, imagenUrl) {
 
   // Construir fila según orden real de encabezados
   const fila = headers.map(header => columnMap[header] !== undefined ? columnMap[header] : '');
+  console.log('Fila a escribir:', JSON.stringify(fila));
 
-  await sheets.spreadsheets.values.append({
+  // Escribir en la fila exacta
+  await sheets.spreadsheets.values.update({
     spreadsheetId: SPREADSHEET_ID,
-    range: 'Pedidos!A:A',
+    range: `Pedidos!A${ultimaFila}`,
     valueInputOption: 'RAW',
-    insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [fila] }
   });
 
-  console.log('Fila escrita en Sheets:', fila);
+  console.log('Fila escrita exitosamente en fila:', ultimaFila);
 }
 
 // Procesar sesión completa cuando llega el punto final
