@@ -254,13 +254,13 @@ app.post('/webhook', async (req, res) => {
     }
 
     // Acumular texto si no es el punto final
-    if (contenido && contenido.trim() !== '..') {
+    if (contenido && !contenido.trim().replace(/\s+/g, '').endsWith('..'))  {
       sesiones[conversationId].textos.push(contenido.trim());
       console.log(`Texto acumulado para conversación ${conversationId}: "${contenido}"`);
     }
 
     // TRIGGER 2: Detectar punto final — procesar todo
-    if (contenido.trim() === '..') {
+    if (contenido.trim().replace(/\s+/g, '').endsWith('..'))  {
       console.log(`Punto final detectado, procesando conversación ${conversationId}`);
       await procesarSesion(conversationId);
     }
