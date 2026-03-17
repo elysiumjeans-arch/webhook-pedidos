@@ -250,9 +250,7 @@ app.post('/webhook', async (req, res) => {
     // Acumular imagen si llega
     if (imagen) {
       sesiones[conversationId].imagen = imagen.data_url;
-      sesiones[conversationId].fechaPedido = body.created_at 
-        ? new Date(body.created_at * 1000).toLocaleString('es-CO', {timeZone: 'America/Bogota'})
-        : new Date().toLocaleString('es-CO', {timeZone: 'America/Bogota'});
+       sesiones[conversationId].fechaPedido = new Date().toLocaleString('es-CO', {timeZone: 'America/Bogota'});
       console.log(`Imagen guardada para conversación ${conversationId}`);
     }
 
