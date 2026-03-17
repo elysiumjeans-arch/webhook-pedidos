@@ -145,7 +145,7 @@ async function escribirEnSheets(datos, imagenUrl) {
   };
 
   // Construir fila según orden real de encabezados
-  const fila = headers.map(header => columnMap[header] !== undefined ? columnMap[header] : '');
+  const fila = headers.map(header => columnMap[header] !== undefined ? columnMap[header] : null);
   console.log('Fila a escribir:', JSON.stringify(fila));
 
   // Escribir en la fila exacta
