@@ -46,11 +46,14 @@ async function descargarImagen(url) {
 async function subirImagen(buffer, filename) {
   const bucket = storage.bucket(BUCKET_NAME);
   const file = bucket.file(`pedidos/${filename}`);
-  await file.save(buffer, { 
-    contentType: 'image/jpeg', 
-    public: true 
+  await file.save(buffer, { contentType: 'image/jpeg' });
+  
+  // Generar URL firmada válida por 7 días
+  const [url] = await file.getSignedUrl({
+    action: 'read',
+    expires: Date.now() + 7 * 24 * 60 * 60 * 1000
   });
-  return `https://storage.googleapis.com/${BUCKET_NAME}/pedidos/${filename}`;
+  return url;
 }
 
 // Procesar con Gemini
