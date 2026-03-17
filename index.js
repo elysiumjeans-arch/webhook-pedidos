@@ -228,14 +228,17 @@ app.post('/webhook', async (req, res) => {
         ? new Date().toLocaleString('es-CO', {timeZone: 'America/Bogota'})
         : fechaObj.toLocaleString('es-CO', {timeZone: 'America/Bogota'});
 
+      const sessionId = Date.now();
+
       sesiones[conversationId] = {
+        sessionId: sessionId,
         textos: [],
         imagen: imagen.data_url,
         textoImagen: contenido || body.attachments?.[0]?.caption || null,
         timestamp: Date.now(),
         fechaPedido: fechaPedido,
         timer: setTimeout(() => {
-          if (sesiones[conversationId]) {
+          if (sesiones[conversationId] && sesiones[conversationId].sessionId === sessionId) {
             console.log(`Timer alcanzado, procesando automáticamente conversación ${conversationId}`);
             procesarSesion(conversationId);
           }
@@ -261,10 +264,11 @@ app.post('/webhook', async (req, res) => {
       sesiones[conversationId].textos.push(contenido.trim());
       console.log(`Texto acumulado para conversación ${conversationId}: "${contenido}"`);
 
-      // Reiniciar timer solo si hay texto real
+      // Reiniciar timer con sessionId actual
+      const currentSessionId = sesiones[conversationId].sessionId;
       if (sesiones[conversationId].timer) clearTimeout(sesiones[conversationId].timer);
       sesiones[conversationId].timer = setTimeout(() => {
-        if (sesiones[conversationId]) {
+        if (sesiones[conversationId] && sesiones[conversationId].sessionId === currentSessionId) {
           console.log(`Timer alcanzado tras texto, procesando automáticamente conversación ${conversationId}`);
           procesarSesion(conversationId);
         }
@@ -273,7 +277,9 @@ app.post('/webhook', async (req, res) => {
 
     // TRIGGER 2: Detectar punto final — procesar todo
     if (contenido.trim().replace(/\s+/g, '').endsWith('..')) {
-      if (sesiones[conversationId].timer) clearTimeout(sesiones[conversationId].timer);
+      if (sesiones[conversationId] && sesiones[conversationId].timer) {
+        clearTimeout(sesiones[conversationId].timer);
+      }
       console.log(`Punto final detectado, procesando conversación ${conversationId}`);
       await procesarSesion(conversationId);
     }
