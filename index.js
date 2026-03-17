@@ -261,14 +261,23 @@ app.post('/webhook', async (req, res) => {
         : fechaObj.toLocaleString('es-CO', {timeZone: 'America/Bogota'});
     
       // Limpiar sesiones viejas de más de 10 minutos
+// Limpiar sesiones viejas de más de 10 minutos
       Object.keys(sesiones).forEach(id => {
         if (Date.now() - sesiones[id].timestamp > 600000) {
           console.log(`Limpiando sesión expirada: ${id}`);
           delete sesiones[id];
         }
       });
+
+      // Timer de 1 minuto — si no llega .. procesa automáticamente
+      setTimeout(() => {
+        if (sesiones[conversationId]) {
+          console.log(`Timer de 1 minuto alcanzado, procesando automáticamente conversación ${conversationId}`);
+          procesarSesion(conversationId);
+        }
+      }, 60000);
+
       return;
-    }
     
     // Si no hay sesión abierta para esta conversación, ignorar
     if (!sesiones[conversationId]) return;
