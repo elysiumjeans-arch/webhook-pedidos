@@ -270,12 +270,14 @@ app.post('/webhook', async (req, res) => {
       });
 
       // Timer de 1 minuto — si no llega .. procesa automáticamente
-      setTimeout(() => {
+// Timer de 39 segundos — si no llega .. procesa automáticamente
+      if (sesiones[conversationId].timer) clearTimeout(sesiones[conversationId].timer);
+      sesiones[conversationId].timer = setTimeout(() => {
         if (sesiones[conversationId]) {
-          console.log(`Timer de 1 minuto alcanzado, procesando automáticamente conversación ${conversationId}`);
+          console.log(`Timer alcanzado, procesando automáticamente conversación ${conversationId}`);
           procesarSesion(conversationId);
         }
-      }, 39000);
+      }, 29000);
 
       return;
     
@@ -296,7 +298,7 @@ app.post('/webhook', async (req, res) => {
           console.log(`Timer de 1 minuto alcanzado tras texto, procesando automáticamente conversación ${conversationId}`);
           procesarSesion(conversationId);
         }
-      }, 39000);
+      }, 29000);
     }
 
     // TRIGGER 2: Detectar punto final — procesar todo
