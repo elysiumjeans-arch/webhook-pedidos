@@ -222,38 +222,21 @@ app.post('/webhook', async (req, res) => {
 
     console.log(`Mensaje recibido - Conv: ${conversationId} - Contenido: "${contenido}" - Imagen: ${!!imagen}`);
 
-    // TRIGGER 1: Detectar +p — cerrar sesión anterior si existe y abrir nueva
-    if (contenido.includes('+p')) {
-      if (sesiones[conversationId]) {
-        console.log(`Cerrando sesión anterior para conversación ${conversationId}`);
+// TRIGGER 1: Imagen detectada — cerrar sesión anterior y abrir nueva
+    if (imagen) {
+      if (sesiones[conversationId] && sesiones[conversationId].imagen) {
+        console.log(`Procesando sesión anterior antes de abrir nueva`);
+        procesarSesion(conversationId);
       }
       console.log(`Abriendo sesión para conversación ${conversationId}`);
       sesiones[conversationId] = {
         textos: [],
-        imagen: null,
-        textoImagen: null,
+        imagen: imagen.data_url,
+        textoImagen: contenido || null,
         timestamp: Date.now(),
         fechaPedido: null
       };
-
-      // Limpiar sesiones viejas de más de 10 minutos
-      Object.keys(sesiones).forEach(id => {
-        if (Date.now() - sesiones[id].timestamp > 600000) {
-          console.log(`Limpiando sesión expirada: ${id}`);
-          delete sesiones[id];
-        }
-      });
-      return;
-    }
-
-    // Si no hay sesión abierta para esta conversación, ignorar
-    if (!sesiones[conversationId]) return;
-
-    // Acumular imagen si llega
-    if (imagen) {
-      sesiones[conversationId].imagen = imagen.data_url;
-      sesiones[conversationId].textoImagen = contenido || null;
-
+    
       let fechaRaw = body.created_at;
       let fechaObj;
       if (!fechaRaw) {
@@ -268,9 +251,21 @@ app.post('/webhook', async (req, res) => {
       sesiones[conversationId].fechaPedido = isNaN(fechaObj.getTime())
         ? new Date().toLocaleString('es-CO', {timeZone: 'America/Bogota'})
         : fechaObj.toLocaleString('es-CO', {timeZone: 'America/Bogota'});
-
-      console.log(`Imagen guardada para conversación ${conversationId} - Fecha: ${sesiones[conversationId].fechaPedido}`);
+    
+      // Limpiar sesiones viejas de más de 10 minutos
+      Object.keys(sesiones).forEach(id => {
+        if (Date.now() - sesiones[id].timestamp > 600000) {
+          console.log(`Limpiando sesión expirada: ${id}`);
+          delete sesiones[id];
+        }
+      });
+      return;
     }
+    
+    // Si no hay sesión abierta para esta conversación, ignorar
+    if (!sesiones[conversationId]) return;
+
+      
 
     // Acumular texto si no termina en ..
     if (contenido && !contenido.trim().replace(/\s+/g, '').endsWith('..')) {
