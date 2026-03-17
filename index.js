@@ -68,7 +68,7 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
   };
 
   const prompt = `
-    Eres un asistente que extrae datos de pedidos de clientes para una tienda de jeans.
+    Eres un asistente que extrae datos de pedidos de clientes para una tienda de ropa.
     Analiza la imagen del chat y el texto adicional del operador.
     Combina ambas fuentes para obtener la información más completa posible.
     El texto adicional puede contener datos que no están en la imagen que por lo general es , talla(6,8,28,30,32, etc.) código de producto(cla,hop, ov cargo, etc) y código de color(ne, ao, ac, rojo, entre otros). Valor del producto (130, 100,y superiores), en ocasiones características de la ubicación del destinatario que no están en la imagen(ciudad,que se dirige a oficina interrapidismo entre otros) 
@@ -81,7 +81,7 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
       "telefono": "número de teléfono del cliente, Es un número de 10 dígitos Que comienza por 3 y en ocasiones es precedido por un +57",
       "direccion": "dirección completa de entrega, O en ocasiones colocar oficina Principal de inter rapidísimo Si dice oficina",
       "ciudad": "ciudad o municipio de Colombia donde se realiza la entrega ",
-      "producto": "descripción del producto o contenido del pedido",
+      "producto": "descripción del producto o contenido del pedido, por lo general ira primero la talla y despues la descripcion del producto",
       "valorRecaudo": "valor a recaudar en números sin símbolos, Todos los valores aparecen en miles. Es decir que si llegas a ver por ejemplo 130, colocarás 130000.. Si el texto menciona 'ya pagó', 'pagado', 'pago', 'ya canceló' o similar, coloca 0. "
     }
     
