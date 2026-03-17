@@ -232,9 +232,15 @@ app.post('/webhook', async (req, res) => {
 
 // TRIGGER 1: Imagen detectada — cerrar sesión anterior y abrir nueva
     if (imagen) {
-      if (sesiones[conversationId] && sesiones[conversationId].imagen) {
-        console.log(`Procesando sesión anterior antes de abrir nueva`);
-        procesarSesion(conversationId);
+      if (sesiones[conversationId]) {
+        if (sesiones[conversationId].timer) {
+          clearTimeout(sesiones[conversationId].timer);
+          console.log(`Timer anterior cancelado para conversación ${conversationId}`);
+        }
+        if (sesiones[conversationId].imagen) {
+          console.log(`Procesando sesión anterior antes de abrir nueva`);
+          procesarSesion(conversationId);
+        }
       }
       console.log(`Abriendo sesión para conversación ${conversationId}`);
       sesiones[conversationId] = {
@@ -287,19 +293,19 @@ app.post('/webhook', async (req, res) => {
       
 
     // Acumular texto si no termina en ..
-    if (contenido && !contenido.trim().replace(/\s+/g, '').endsWith('..')) {
-      sesiones[conversationId].textos.push(contenido.trim());
-      console.log(`Texto acumulado para conversación ${conversationId}: "${contenido}"`);
-
-      // Reiniciar timer de 1 minuto
-      if (sesiones[conversationId].timer) clearTimeout(sesiones[conversationId].timer);
-      sesiones[conversationId].timer = setTimeout(() => {
-        if (sesiones[conversationId]) {
-          console.log(`Timer de 1 minuto alcanzado tras texto, procesando automáticamente conversación ${conversationId}`);
-          procesarSesion(conversationId);
+    if (contenido && contenido.trim().length > 0 && !contenido.trim().replace(/\s+/g, '').endsWith('..')) {
+          sesiones[conversationId].textos.push(contenido.trim());
+          console.log(`Texto acumulado para conversación ${conversationId}: "${contenido}"`);
+    
+          // Reiniciar timer solo si hay texto real
+          if (sesiones[conversationId].timer) clearTimeout(sesiones[conversationId].timer);
+          sesiones[conversationId].timer = setTimeout(() => {
+            if (sesiones[conversationId]) {
+              console.log(`Timer alcanzado tras texto, procesando automáticamente conversación ${conversationId}`);
+              procesarSesion(conversationId);
+            }
+          }, 19000);
         }
-      }, 29000);
-    }
 
     // TRIGGER 2: Detectar punto final — procesar todo
     if (contenido.trim().replace(/\s+/g, '').endsWith('..')) {
