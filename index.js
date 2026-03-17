@@ -288,6 +288,15 @@ app.post('/webhook', async (req, res) => {
     if (contenido && !contenido.trim().replace(/\s+/g, '').endsWith('..')) {
       sesiones[conversationId].textos.push(contenido.trim());
       console.log(`Texto acumulado para conversación ${conversationId}: "${contenido}"`);
+
+      // Reiniciar timer de 1 minuto
+      if (sesiones[conversationId].timer) clearTimeout(sesiones[conversationId].timer);
+      sesiones[conversationId].timer = setTimeout(() => {
+        if (sesiones[conversationId]) {
+          console.log(`Timer de 1 minuto alcanzado tras texto, procesando automáticamente conversación ${conversationId}`);
+          procesarSesion(conversationId);
+        }
+      }, 60000);
     }
 
     // TRIGGER 2: Detectar punto final — procesar todo
