@@ -115,6 +115,8 @@ async function escribirEnSheets(datos, imagenUrl) {
   });
 
   const headers = headersResponse.data.values[0];
+  console.log('Encabezados encontrados:', JSON.stringify(headers));
+  console.log('Datos a escribir:', JSON.stringify(columnMap));
 
   // Mapeo de columnas por nombre
   const columnMap = {
