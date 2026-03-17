@@ -48,7 +48,6 @@ async function subirImagen(buffer, filename) {
   const file = bucket.file(`pedidos/${filename}`);
   await file.save(buffer, { contentType: 'image/jpeg' });
   
-  // Generar URL firmada válida por 7 días
   const [url] = await file.getSignedUrl({
     action: 'read',
     expires: Date.now() + 7 * 24 * 60 * 60 * 1000
@@ -71,20 +70,20 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
     Eres un asistente que extrae datos de pedidos de clientes para una tienda de ropa.
     Analiza la imagen del chat y el texto adicional del operador.
     Combina ambas fuentes para obtener la información más completa posible.
-    El texto adicional puede contener datos que no están en la imagen que por lo general es , talla(6,8,28,30,32, etc.) código de producto(cla,hop, ov cargo, etc) y código de color(ne, ao, ac, rojo, entre otros). Valor del producto (130, 100,y superiores), en ocasiones características de la ubicación del destinatario que no están en la imagen(ciudad,que se dirige a oficina interrapidismo entre otros) 
+    El texto adicional puede contener datos que no están en la imagen que por lo general es talla (6,8,28,30,32, etc.) código de producto (cla, hop, ov cargo, etc) y código de color (ne, ao, ac, rojo, entre otros). Valor del producto (130, 100, y superiores), en ocasiones características de la ubicación del destinatario que no están en la imagen (ciudad, que se dirige a oficina interrapidísimo entre otros).
     
     Texto adicional del operador: "${textoAdicional}"
     
     Extrae los siguientes datos y devuelve SOLO un JSON válido sin texto adicional ni backticks:
     {
-      "nombre": "nombre completo del cliente/",
-      "telefono": "número de teléfono del cliente, Es un número de 10 dígitos Que comienza por 3 y en ocasiones es precedido por un +57",
-      "direccion": "dirección completa de entrega, O en ocasiones colocar oficina Principal de inter rapidísimo Si dice oficina",
-      "ciudad": "ciudad o municipio de Colombia donde se realiza la entrega ",
-      "producto": "descripción del producto o contenido del pedido, ira primero la talla y despues la descripcion del producto",
-      "valorRecaudo": "valor a recaudar en números sin símbolos,los valores estan siempre despues del producto . Todos los valores se dan en miles. Es decir que si llegas a ver por ejemplo 130, colocarás 130000.. Si el texto menciona 'ya pagó', 'pagado', 'pago', 'ya canceló' o similar, coloca 0. "
+      "nombre": "nombre completo del cliente",
+      "telefono": "número de teléfono del cliente, es un número de 10 dígitos que comienza por 3 y en ocasiones es precedido por un +57",
+      "direccion": "dirección completa de entrega, o en ocasiones colocar oficina principal de interrapidísimo si dice oficina",
+      "ciudad": "ciudad o municipio de Colombia donde se realiza la entrega",
+      "producto": "descripción del producto o contenido del pedido, irá primero la talla y después la descripción del producto",
+      "valorRecaudo": "valor a recaudar en números sin símbolos. Los valores están siempre después del producto. Todos los valores se dan en miles. Es decir que si llegas a ver por ejemplo 130, colocarás 130000. Si el texto menciona ya pagó, pagado, pago, ya canceló o similar, coloca 0.",
       "tipo": "tipo de pedido según el texto: VENTA si es pedido normal o tiene valor a cobrar o menciona ya pagó o pagado, CAMBIO si menciona cambio o cambiar, ERROR si menciona error o botones o falla, CAMBIO Y RECOGER si menciona recoger prenda o cambio y recoger. Por defecto VENTA si no hay ninguna indicación."
-      }
+    }
     
     Si un dato no está disponible en ninguna fuente o no es claro o hay posibilidad de confusión, usa null.
     Devuelve SOLO el JSON, sin explicaciones ni texto adicional.
@@ -93,7 +92,6 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
   const result = await model.generateContent([prompt, imagePart]);
   const text = result.response.text().trim();
 
-  // Limpiar posibles backticks que Gemini a veces agrega
   const clean = text.replace(/```json|```/g, '').trim();
   const jsonMatch = clean.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('Gemini no devolvió un JSON válido');
@@ -134,7 +132,7 @@ async function escribirEnSheets(datos, imagenUrl, fechaPedido) {
   const ultimaFila = nombresData.length + 1;
   console.log('Escribiendo en fila:', ultimaFila);
 
-  // Mapeo de columnas
+  // Mapeo de columnas por nombre
   const columnMap = {
     'Nombre': datos.nombre || '',
     'Teléfono': datos.telefono || '',
@@ -144,7 +142,7 @@ async function escribirEnSheets(datos, imagenUrl, fechaPedido) {
     'Valor Recaudo ($)': datos.valorRecaudo || '',
     'Imagen': imagenUrl || '',
     'Tipo': datos.tipo || 'VENTA',
-    'Fecha Pedido': sesion.fechaPedido || '',
+    'Fecha Pedido': fechaPedido || ''
   };
 
   // Construir fila según orden real de encabezados
@@ -201,22 +199,17 @@ async function procesarSesion(conversationId) {
 
 // Webhook principal
 app.post('/webhook', async (req, res) => {
-  // Responder inmediatamente a Chatwoot
   res.sendStatus(200);
 
   try {
     const body = req.body;
 
-    // Solo procesar eventos de mensaje creado
     if (body.event !== 'message_created') return;
+    if (body.message_type !== 0 && body.message_type !== 'incoming') return;
 
-    // Solo mensajes entrantes (message_type 0 = incoming en Chatwoot)
-    if (body.message_type !== 0 && body.message_type !== 'incoming' && body.message_type !== 'outgoing') return;
-
-    // Verificar número autorizado
     const numero = body.meta?.sender?.phone_number || 
-               body.conversation?.meta?.sender?.phone_number ||
-               body.sender?.phone_number || '';
+                   body.conversation?.meta?.sender?.phone_number ||
+                   body.sender?.phone_number || '';
     if (!numeroAutorizado(numero)) return;
 
     const conversationId = body.conversation?.id;
@@ -228,19 +221,18 @@ app.post('/webhook', async (req, res) => {
 
     console.log(`Mensaje recibido - Conv: ${conversationId} - Contenido: "${contenido}" - Imagen: ${!!imagen}`);
 
-    // TRIGGER 1: Detectar #p — abrir sesión
     // TRIGGER 1: Detectar +p — cerrar sesión anterior si existe y abrir nueva
     if (contenido.includes('+p')) {
-    if (sesiones[conversationId]) {
-      console.log(`Cerrando sesión anterior para conversación ${conversationId}`);
-    }
-    console.log(`Abriendo sesión para conversación ${conversationId}`);
-    sesiones[conversationId] = {
-      textos: [],
-      imagen: null,
-      timestamp: Date.now(),
-      fechaPedido: null
-  };
+      if (sesiones[conversationId]) {
+        console.log(`Cerrando sesión anterior para conversación ${conversationId}`);
+      }
+      console.log(`Abriendo sesión para conversación ${conversationId}`);
+      sesiones[conversationId] = {
+        textos: [],
+        imagen: null,
+        timestamp: Date.now(),
+        fechaPedido: null
+      };
 
       // Limpiar sesiones viejas de más de 10 minutos
       Object.keys(sesiones).forEach(id => {
@@ -264,14 +256,14 @@ app.post('/webhook', async (req, res) => {
       console.log(`Imagen guardada para conversación ${conversationId}`);
     }
 
-    // Acumular texto si no es el punto final
-    if (contenido && !contenido.trim().replace(/\s+/g, '').endsWith('..'))  {
+    // Acumular texto si no termina en ..
+    if (contenido && !contenido.trim().replace(/\s+/g, '').endsWith('..')) {
       sesiones[conversationId].textos.push(contenido.trim());
       console.log(`Texto acumulado para conversación ${conversationId}: "${contenido}"`);
     }
 
     // TRIGGER 2: Detectar punto final — procesar todo
-    if (contenido.trim().replace(/\s+/g, '').endsWith('..'))  {
+    if (contenido.trim().replace(/\s+/g, '').endsWith('..')) {
       console.log(`Punto final detectado, procesando conversación ${conversationId}`);
       await procesarSesion(conversationId);
     }
