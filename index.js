@@ -64,7 +64,7 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
     Eres un asistente que extrae datos de pedidos de clientes para una tienda de ropa.
     Analiza la imagen del chat y el texto adicional del operador.
     Combina ambas fuentes para obtener la información más completa posible.
-    El texto adicional puede contener datos que no están en la imagen que por lo general es talla (6,8,28,30,32, etc.) código de producto (cla, hop, ov cargo, etc) y código de color (ne, ao, ac, rojo, entre otros). Valor del producto (130, 100, y superiores), en ocasiones características de la ubicación del destinatario que no están en la imagen (ciudad, que se dirige a oficina interrapidísimo entre otros).
+    El texto adicional puede contener datos que no están en la imagen que por lo general es talla (6,8,28,30,32, etc.) código de producto (cla, hop, ov cargo, etc) y código de color (ne, ao, ac, rojo, entre otros). Valor del producto (130, 100, y superiores), en ocasiones características de la ubicación del destinatario que no están en la imagen (ciudad, que se dirige a oficina interrapidísimo entre otros) o incluso correcciones que deben tenerse en cuenta, que modifican los datos que se encuentran en la imagen.
     
     Texto adicional del operador: "${textoAdicional}"
     
@@ -72,7 +72,7 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
     {
       "nombre": "nombre completo del cliente",
       "telefono": "número de teléfono del cliente, es un número de 10 dígitos que comienza por 3 y en ocasiones es precedido por un +57",
-      "direccion": "dirección completa de entrega, o en ocasiones colocar oficina principal de interrapidísimo si dice oficina",
+      "direccion": "dirección completa de entrega por lo general esta en la imagen, sin embargo si en el texto adicional aparece oficina, debe colocarse oficina principal interrapidisimo sin importar que en la imagen este una direccion escrita, o en ocasiones aparecera en el texto adicional la oficina de interrapidisimo y su direccion en ese caso se óndra esos datos. Ten presente que la información que está en el texto adicional va como prioridad sobre la de la imagen ",
       "ciudad": "ciudad o municipio de Colombia donde se realiza la entrega",
       "producto": "descripción del producto o contenido del pedido, irá primero la talla y después la descripción del producto",
       "valorRecaudo": "valor a recaudar en números sin símbolos. Los valores están siempre después de la referencia del producto. Todos los valores se dan en miles. Es decir que si llegas a ver por ejemplo 130, colocarás 130000. Si el texto menciona ya pago, pagado, pago, ya canceló o similar, coloca 0.",
