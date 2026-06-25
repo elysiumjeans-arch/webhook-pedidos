@@ -301,7 +301,7 @@ app.post('/webhook', async (req, res) => {
             delete sesiones[conversationId];
             procesarSesion(sesionActual, conversationId);
           }
-        }, 19000)
+        }, 45000)
       };
       Object.keys(sesiones).forEach(id => {
         if (Date.now() - sesiones[id].timestamp > 600000) {
@@ -324,7 +324,7 @@ app.post('/webhook', async (req, res) => {
           delete sesiones[conversationId];
           procesarSesion(sesionActual, conversationId);
         }
-      }, 19000);
+      }, 45000);
     }
     if (contenido.trim().replace(/\s+/g, '').endsWith('..')) {
       if (sesiones[conversationId]?.timer) {
