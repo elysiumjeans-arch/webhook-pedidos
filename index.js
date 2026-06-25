@@ -18,12 +18,16 @@ const NUMEROS_AUTORIZADOS = [
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const storage = new Storage();
 const sesiones = {};
+let escribiendoEnSheets = false;
+const colaEscritura = [];
+
 function numeroAutorizado(numero) {
   if (!numero) return false;
   return NUMEROS_AUTORIZADOS.some(n => 
     numero.includes(n) || n.includes(numero)
   );
 }
+
 async function descargarImagen(url) {
   const response = await axios.get(url, {
     headers: { 'api_access_token': CHATWOOT_TOKEN },
@@ -31,6 +35,7 @@ async function descargarImagen(url) {
   });
   return Buffer.from(response.data);
 }
+
 async function subirImagen(buffer, filename) {
   const bucket = storage.bucket(BUCKET_NAME);
   const file = bucket.file(`pedidos/${filename}`);
@@ -41,6 +46,7 @@ async function subirImagen(buffer, filename) {
   });
   return url;
 }
+
 async function procesarConGemini(imageBuffer, textoAdicional) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
   const imagePart = {
@@ -132,7 +138,30 @@ Devuelve SOLO el JSON, sin explicaciones ni texto adicional.
   if (!jsonMatch) throw new Error('Gemini no devolvió un JSON válido');
   return JSON.parse(jsonMatch[0]);
 }
+
 async function escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, textoAdicional) {
+  return new Promise((resolve, reject) => {
+    colaEscritura.push({ datos, imagenUrl, fechaPedido, textoImagen, textoAdicional, resolve, reject });
+    procesarColaEscritura();
+  });
+}
+
+async function procesarColaEscritura() {
+  if (escribiendoEnSheets || colaEscritura.length === 0) return;
+  escribiendoEnSheets = true;
+  const { datos, imagenUrl, fechaPedido, textoImagen, textoAdicional, resolve, reject } = colaEscritura.shift();
+  try {
+    await _escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, textoAdicional);
+    resolve();
+  } catch (e) {
+    reject(e);
+  } finally {
+    escribiendoEnSheets = false;
+    procesarColaEscritura();
+  }
+}
+
+async function _escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, textoAdicional) {
   const auth = new google.auth.GoogleAuth({
     scopes: ['https://www.googleapis.com/auth/spreadsheets']
   });
@@ -143,19 +172,18 @@ async function escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, text
   });
   const headers = headersResponse.data.values[0];
   console.log('Encabezados encontrados:', JSON.stringify(headers));
-  const nombreCol = headers.indexOf('Nombre');
-  if (nombreCol === -1) throw new Error('No se encontró la columna Nombre');
-  const colLetra = String.fromCharCode(65 + nombreCol);
-  const nombresResponse = await sheets.spreadsheets.values.get({
+  const telefonoCol = headers.indexOf('Teléfono');
+  if (telefonoCol === -1) throw new Error('No se encontró la columna Teléfono');
+  const colLetra = String.fromCharCode(65 + telefonoCol);
+  const telefonosResponse = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
     range: `Pedidos!${colLetra}:${colLetra}`
   });
-  const ultimaFila = (nombresResponse.data.values || []).length + 1;
+  const ultimaFila = (telefonosResponse.data.values || []).length + 1;
   console.log('Escribiendo en fila:', ultimaFila);
   console.log('textoImagen:', JSON.stringify(textoImagen));
   console.log('textoAdicional:', JSON.stringify(textoAdicional));
 
-  // Construir el texto de abono si aplica
   let textoAbono = '';
   if (datos.abono) {
     textoAbono = datos.medioPagoAbono
@@ -190,6 +218,7 @@ async function escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, text
   });
   console.log('Fila escrita exitosamente en fila:', ultimaFila);
 }
+
 async function procesarSesion(sesion, conversationId) {
   if (!sesion) return;
   try {
@@ -202,6 +231,7 @@ async function procesarSesion(sesion, conversationId) {
     const filename = `pedido_${conversationId}_${Date.now()}.jpg`;
     const imagenUrl = await subirImagen(imageBuffer, filename);
     const textoAdicional = sesion.textos.join(' ');
+    console.log('Textos en sesión:', JSON.stringify(sesion.textos));
     const datos = await procesarConGemini(imageBuffer, textoAdicional);
     await escribirEnSheets(datos, imagenUrl, sesion.fechaPedido, sesion.textoImagen, textoAdicional);
     console.log('Pedido procesado exitosamente:', datos);
@@ -209,6 +239,7 @@ async function procesarSesion(sesion, conversationId) {
     console.error(`Error procesando sesión ${conversationId}:`, error.message);
   }
 }
+
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   try {
@@ -308,6 +339,7 @@ app.post('/webhook', async (req, res) => {
     console.error('Error en webhook:', error.message);
   }
 });
+
 app.get('/', (req, res) => {
   res.json({ 
     status: 'ok', 
@@ -315,6 +347,7 @@ app.get('/', (req, res) => {
     sesionesActivas: Object.keys(sesiones).length
   });
 });
+
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
