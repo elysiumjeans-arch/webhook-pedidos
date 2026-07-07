@@ -11,9 +11,12 @@ const CHATWOOT_TOKEN = process.env.CHATWOOT_TOKEN;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const BUCKET_NAME = process.env.BUCKET_NAME;
 const NUMEROS_AUTORIZADOS = [
+  '3222646442',
+  '573222646442',
+  '+573222646442',
   '3166470923',
   '573166470923',
-  '+573166470923'
+  '+573166470923',
 ];
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const storage = new Storage();
@@ -244,13 +247,6 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   try {
     const body = req.body;
-    console.log("Webhook completo:", JSON.stringify(body, null, 2));
-    console.log('--- WEBHOOK BODY INICIO ---');
-    console.log('Webhook body recibido (raw):', JSON.stringify(body, null, 2));
-    console.log('Contenido (body.content):', body.content);
-    console.log('Attachments (body.attachments):', JSON.stringify(body.attachments || [], null, 2));
-    console.log('--- WEBHOOK BODY FIN ---');
-
     if (body.event !== 'message_created') return;
     if (body.message_type !== 0 && body.message_type !== 'incoming') return;
     const numero = body.meta?.sender?.phone_number || 
