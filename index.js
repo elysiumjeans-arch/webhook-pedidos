@@ -244,6 +244,7 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   try {
     const body = req.body;
+    console.log("Webhook completo:", JSON.stringify(body, null, 2));
     console.log('--- WEBHOOK BODY INICIO ---');
     console.log('Webhook body recibido (raw):', JSON.stringify(body, null, 2));
     console.log('Contenido (body.content):', body.content);
