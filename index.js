@@ -13,7 +13,7 @@ const BUCKET_NAME = process.env.BUCKET_NAME;
 const NUMEROS_AUTORIZADOS = [
   '3166470923',
   '573166470923',
-  '+5731666470923'
+  '+573166470923'
 ];
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const storage = new Storage();
