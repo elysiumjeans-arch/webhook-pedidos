@@ -64,8 +64,9 @@ async function buscarImagenEnChatwoot(conversationId) {
     );
     const mensajes = response.data.payload || [];
     // Buscar la imagen más reciente en los últimos 50 mensajes
+    const ahora = Math.floor(Date.now() / 1000);
     const imagenes = mensajes
-      .filter(m => m.attachments && m.attachments.some(a => a.file_type === 'image'))
+      .filter(m => m.attachments && m.attachments.some(a => a.file_type === 'image') && m.created_at < ahora)
       .sort((a, b) => b.created_at - a.created_at);
     if (imagenes.length > 0) {
       const attachment = imagenes[0].attachments.find(a => a.file_type === 'image');
