@@ -244,6 +244,12 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   try {
     const body = req.body;
+    console.log('--- WEBHOOK BODY INICIO ---');
+    console.log('Webhook body recibido (raw):', JSON.stringify(body, null, 2));
+    console.log('Contenido (body.content):', body.content);
+    console.log('Attachments (body.attachments):', JSON.stringify(body.attachments || [], null, 2));
+    console.log('--- WEBHOOK BODY FIN ---');
+
     if (body.event !== 'message_created') return;
     if (body.message_type !== 0 && body.message_type !== 'incoming') return;
     const numero = body.meta?.sender?.phone_number || 
