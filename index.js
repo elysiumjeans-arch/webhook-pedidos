@@ -23,7 +23,6 @@ const NUMEROS_AUTORIZADOS = [
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const storage = new Storage();
-const sesiones = {};
 let escribiendoEnSheets = false;
 const colaEscritura = [];
 
@@ -53,30 +52,55 @@ async function subirImagen(buffer, filename) {
   return url;
 }
 
-async function buscarImagenEnChatwoot(conversationId) {
+async function obtenerMensajesConversacion(conversationId) {
   try {
-    console.log(`Consultando API de Chatwoot para conversación ${conversationId}`);
     const response = await axios.get(
       `${CHATWOOT_URL}/api/v1/accounts/27/conversations/${conversationId}/messages`,
-      {
-        headers: { 'api_access_token': CHATWOOT_TOKEN }
-      }
+      { headers: { 'api_access_token': CHATWOOT_TOKEN } }
     );
-    const mensajes = response.data.payload || [];
-    // Buscar la imagen más reciente en los últimos 50 mensajes
-    const ahora = Math.floor(Date.now() / 1000);
-    const imagenes = mensajes
-      .filter(m => m.attachments && m.attachments.some(a => a.file_type === 'image') && m.created_at < ahora)
-      .sort((a, b) => b.created_at - a.created_at);
-    if (imagenes.length > 0) {
-      const attachment = imagenes[0].attachments.find(a => a.file_type === 'image');
-      console.log(`Imagen encontrada via API: ${attachment.data_url}`);
-      return attachment.data_url;
+    return response.data.payload || [];
+  } catch (error) {
+    console.error(`Error consultando mensajes de conversación ${conversationId}:`, error.message);
+    return [];
+  }
+}
+
+async function buscarImagenAntesDeTexto(conversationId, messageId) {
+  try {
+    console.log(`Buscando imagen antes del mensaje ${messageId} en conversación ${conversationId}`);
+    const mensajes = await obtenerMensajesConversacion(conversationId);
+    
+    // Ordenar por created_at ascendente
+    const ordenados = mensajes
+      .filter(m => m.message_type === 0) // solo mensajes entrantes
+      .sort((a, b) => a.created_at - b.created_at);
+
+    // Encontrar el índice del mensaje de texto actual
+    const indiceActual = ordenados.findIndex(m => m.id === messageId);
+    if (indiceActual <= 0) {
+      console.log('No hay mensaje anterior');
+      return null;
     }
-    console.log(`No se encontró imagen en la conversación ${conversationId}`);
+
+    // Revisar el mensaje inmediatamente anterior
+    const mensajeAnterior = ordenados[indiceActual - 1];
+    const tieneImagen = mensajeAnterior.attachments &&
+      mensajeAnterior.attachments.some(a => a.file_type === 'image');
+
+    if (tieneImagen) {
+      const attachment = mensajeAnterior.attachments.find(a => a.file_type === 'image');
+      console.log(`Imagen encontrada en mensaje anterior: ${attachment.data_url}`);
+      return {
+        url: attachment.data_url,
+        fechaPedido: new Date(mensajeAnterior.created_at * 1000)
+          .toLocaleString('es-CO', { timeZone: 'America/Bogota' })
+      };
+    }
+
+    console.log(`El mensaje anterior no es una imagen, ignorando texto`);
     return null;
   } catch (error) {
-    console.error(`Error consultando API Chatwoot: ${error.message}`);
+    console.error(`Error buscando imagen anterior:`, error.message);
     return null;
   }
 }
@@ -289,96 +313,31 @@ app.post('/webhook', async (req, res) => {
     const contenido = body.content || '';
     const adjuntos = body.attachments || [];
     const imagen = adjuntos.find(a => a.file_type === 'image');
+    const messageId = body.id;
     console.log(`Mensaje recibido - Conv: ${conversationId} - Contenido: "${contenido}" - Imagen: ${!!imagen}`);
 
-    // TRIGGER 1: Llegó una imagen
+    // TRIGGER 1: Llegó una imagen → solo registrar en log, el texto la procesará
     if (imagen) {
-      if (sesiones[conversationId]) {
-        if (sesiones[conversationId].timer) {
-          clearTimeout(sesiones[conversationId].timer);
-        }
-        if (sesiones[conversationId].imagen) {
-          console.log(`Procesando sesión anterior antes de abrir nueva`);
-          const sesionAnterior = sesiones[conversationId];
-          delete sesiones[conversationId];
-          procesarSesion(sesionAnterior, conversationId);
-        } else {
-          delete sesiones[conversationId];
-        }
-      }
-      console.log(`Abriendo sesión para conversación ${conversationId}`);
-      let fechaRaw = body.created_at;
-      let fechaObj;
-      if (!fechaRaw) {
-        fechaObj = new Date();
-      } else if (typeof fechaRaw === 'number') {
-        fechaObj = new Date(fechaRaw * 1000);
-      } else if (typeof fechaRaw === 'string') {
-        fechaObj = new Date(fechaRaw.replace(' UTC', 'Z'));
-      } else {
-        fechaObj = new Date();
-      }
-      const fechaPedido = isNaN(fechaObj.getTime())
-        ? new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' })
-        : fechaObj.toLocaleString('es-CO', { timeZone: 'America/Bogota' });
-      const sessionId = Date.now();
-      sesiones[conversationId] = {
-        sessionId,
-        textos: [],
-        imagen: imagen.data_url,
-        textoImagen: contenido || body.attachments?.[0]?.caption || null,
-        timestamp: Date.now(),
-        fechaPedido,
-        timer: setTimeout(() => {
-          const sesionActual = sesiones[conversationId];
-          if (sesionActual && sesionActual.sessionId === sessionId) {
-            console.log(`Timer alcanzado, procesando automáticamente conversación ${conversationId}`);
-            delete sesiones[conversationId];
-            procesarSesion(sesionActual, conversationId);
-          }
-        }, 45000)
-      };
-      Object.keys(sesiones).forEach(id => {
-        if (Date.now() - sesiones[id].timestamp > 600000) {
-          delete sesiones[id];
-        }
-      });
+      console.log(`Imagen registrada en conversación ${conversationId}, esperando texto del operador`);
       return;
     }
 
-    // TRIGGER 2: Llegó un texto
+    // TRIGGER 2: Llegó un texto → verificar si mensaje anterior es imagen
     if (contenido && contenido.trim().length > 0) {
-
-      // Si hay sesión abierta → acumular texto y procesar inmediatamente
-      if (sesiones[conversationId]) {
-        if (sesiones[conversationId].timer) {
-          clearTimeout(sesiones[conversationId].timer);
-        }
-        sesiones[conversationId].textos.push(contenido.trim());
-        console.log(`Texto acumulado para conversación ${conversationId}: "${contenido}"`);
-        const sesionFinal = sesiones[conversationId];
-        delete sesiones[conversationId];
-        console.log(`Texto recibido, procesando conversación ${conversationId}`);
-        await procesarSesion(sesionFinal, conversationId);
+      console.log(`Texto recibido, consultando mensaje anterior en conversación ${conversationId}`);
+      const resultado = await buscarImagenAntesDeTexto(conversationId, messageId);
+      if (!resultado) {
+        console.log(`Mensaje anterior no es imagen, ignorando texto en conversación ${conversationId}`);
         return;
       }
-
-      // Si NO hay sesión → buscar imagen en API de Chatwoot
-      console.log(`Texto sin sesión para conversación ${conversationId}, buscando imagen en Chatwoot...`);
-      const imagenUrl = await buscarImagenEnChatwoot(conversationId);
-      if (imagenUrl) {
-        console.log(`Imagen recuperada de API, procesando conversación ${conversationId}`);
-        const fechaPedido = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' });
-        const sesionRecuperada = {
-          textos: [contenido.trim()],
-          imagen: imagenUrl,
-          textoImagen: null,
-          fechaPedido
-        };
-        await procesarSesion(sesionRecuperada, conversationId);
-      } else {
-        console.log(`No se encontró imagen para conversación ${conversationId}, ignorando texto`);
-      }
+      console.log(`Imagen anterior encontrada, procesando pedido de conversación ${conversationId}`);
+      const sesion = {
+        textos: [contenido.trim()],
+        imagen: resultado.url,
+        textoImagen: null,
+        fechaPedido: resultado.fechaPedido
+      };
+      await procesarSesion(sesion, conversationId);
     }
 
   } catch (error) {
@@ -390,7 +349,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'ok',
     servicio: 'webhook-pedidos',
-    sesionesActivas: Object.keys(sesiones).length
+    sesionesActivas: 0
   });
 });
 
