@@ -5,19 +5,22 @@ const { google } = require('googleapis');
 const { Storage } = require('@google-cloud/storage');
 const app = express();
 app.use(express.json());
+
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const CHATWOOT_URL = process.env.CHATWOOT_URL;
 const CHATWOOT_TOKEN = process.env.CHATWOOT_TOKEN;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const BUCKET_NAME = process.env.BUCKET_NAME;
+
 const NUMEROS_AUTORIZADOS = [
   '3222646442',
   '573222646442',
   '+573222646442',
   '3166470923',
   '573166470923',
-  '+573166470923',
+  '+573166470923'
 ];
+
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const storage = new Storage();
 const sesiones = {};
@@ -26,7 +29,7 @@ const colaEscritura = [];
 
 function numeroAutorizado(numero) {
   if (!numero) return false;
-  return NUMEROS_AUTORIZADOS.some(n => 
+  return NUMEROS_AUTORIZADOS.some(n =>
     numero.includes(n) || n.includes(numero)
   );
 }
@@ -48,6 +51,33 @@ async function subirImagen(buffer, filename) {
     expires: Date.now() + 7 * 24 * 60 * 60 * 1000
   });
   return url;
+}
+
+async function buscarImagenEnChatwoot(conversationId) {
+  try {
+    console.log(`Consultando API de Chatwoot para conversación ${conversationId}`);
+    const response = await axios.get(
+      `${CHATWOOT_URL}/api/v1/accounts/27/conversations/${conversationId}/messages`,
+      {
+        headers: { 'api_access_token': CHATWOOT_TOKEN }
+      }
+    );
+    const mensajes = response.data.payload || [];
+    // Buscar la imagen más reciente en los últimos 50 mensajes
+    const imagenes = mensajes
+      .filter(m => m.attachments && m.attachments.some(a => a.file_type === 'image'))
+      .sort((a, b) => b.created_at - a.created_at);
+    if (imagenes.length > 0) {
+      const attachment = imagenes[0].attachments.find(a => a.file_type === 'image');
+      console.log(`Imagen encontrada via API: ${attachment.data_url}`);
+      return attachment.data_url;
+    }
+    console.log(`No se encontró imagen en la conversación ${conversationId}`);
+    return null;
+  } catch (error) {
+    console.error(`Error consultando API Chatwoot: ${error.message}`);
+    return null;
+  }
 }
 
 async function procesarConGemini(imageBuffer, textoAdicional) {
@@ -108,7 +138,7 @@ REGLAS PARA ERRORES DE ESCRITURA:
 
 REGLAS PARA EL CAMPO POR VALIDAR:
 - Si todo está claro y completo → null
-- Si la IA corrigió una palabra mal escrita o hay una duda menor → describir brevemente. Ejemplo: "Valor corregido de 13O a 130"
+- Si la IA corrigió una palabra mal escrita o hay una duda menor → describir brevemente
 - Si falta un dato crítico → indicarlo claramente. Ejemplo: "Falta dirección", "No se identificó ciudad", "Valor no especificado"
 - Los datos críticos son: nombre, teléfono, dirección, ciudad, valor
 - Si hay múltiples alertas → separarlas con " | "
@@ -249,7 +279,7 @@ app.post('/webhook', async (req, res) => {
     const body = req.body;
     if (body.event !== 'message_created') return;
     if (body.message_type !== 0 && body.message_type !== 'incoming') return;
-    const numero = body.meta?.sender?.phone_number || 
+    const numero = body.meta?.sender?.phone_number ||
                    body.conversation?.meta?.sender?.phone_number ||
                    body.sender?.phone_number || '';
     if (!numeroAutorizado(numero)) return;
@@ -259,11 +289,12 @@ app.post('/webhook', async (req, res) => {
     const adjuntos = body.attachments || [];
     const imagen = adjuntos.find(a => a.file_type === 'image');
     console.log(`Mensaje recibido - Conv: ${conversationId} - Contenido: "${contenido}" - Imagen: ${!!imagen}`);
+
+    // TRIGGER 1: Llegó una imagen
     if (imagen) {
       if (sesiones[conversationId]) {
         if (sesiones[conversationId].timer) {
           clearTimeout(sesiones[conversationId].timer);
-          console.log(`Timer anterior cancelado para conversación ${conversationId}`);
         }
         if (sesiones[conversationId].imagen) {
           console.log(`Procesando sesión anterior antes de abrir nueva`);
@@ -287,16 +318,16 @@ app.post('/webhook', async (req, res) => {
         fechaObj = new Date();
       }
       const fechaPedido = isNaN(fechaObj.getTime())
-        ? new Date().toLocaleString('es-CO', {timeZone: 'America/Bogota'})
-        : fechaObj.toLocaleString('es-CO', {timeZone: 'America/Bogota'});
+        ? new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' })
+        : fechaObj.toLocaleString('es-CO', { timeZone: 'America/Bogota' });
       const sessionId = Date.now();
       sesiones[conversationId] = {
-        sessionId: sessionId,
+        sessionId,
         textos: [],
         imagen: imagen.data_url,
         textoImagen: contenido || body.attachments?.[0]?.caption || null,
         timestamp: Date.now(),
-        fechaPedido: fechaPedido,
+        fechaPedido,
         timer: setTimeout(() => {
           const sesionActual = sesiones[conversationId];
           if (sesionActual && sesionActual.sessionId === sessionId) {
@@ -308,44 +339,55 @@ app.post('/webhook', async (req, res) => {
       };
       Object.keys(sesiones).forEach(id => {
         if (Date.now() - sesiones[id].timestamp > 600000) {
-          console.log(`Limpiando sesión expirada: ${id}`);
           delete sesiones[id];
         }
       });
       return;
     }
-    if (!sesiones[conversationId]) return;
-    if (contenido && contenido.trim().length > 0 && !contenido.trim().replace(/\s+/g, '').endsWith('..')) {
-      sesiones[conversationId].textos.push(contenido.trim());
-      console.log(`Texto acumulado para conversación ${conversationId}: "${contenido}"`);
-      const currentSessionId = sesiones[conversationId].sessionId;
-      if (sesiones[conversationId].timer) clearTimeout(sesiones[conversationId].timer);
-      sesiones[conversationId].timer = setTimeout(() => {
-        const sesionActual = sesiones[conversationId];
-        if (sesionActual && sesionActual.sessionId === currentSessionId) {
-          console.log(`Timer alcanzado tras texto, procesando automáticamente conversación ${conversationId}`);
-          delete sesiones[conversationId];
-          procesarSesion(sesionActual, conversationId);
+
+    // TRIGGER 2: Llegó un texto
+    if (contenido && contenido.trim().length > 0) {
+
+      // Si hay sesión abierta → acumular texto y procesar inmediatamente
+      if (sesiones[conversationId]) {
+        if (sesiones[conversationId].timer) {
+          clearTimeout(sesiones[conversationId].timer);
         }
-      }, 45000);
-    }
-    if (contenido.trim().replace(/\s+/g, '').endsWith('..')) {
-      if (sesiones[conversationId]?.timer) {
-        clearTimeout(sesiones[conversationId].timer);
+        sesiones[conversationId].textos.push(contenido.trim());
+        console.log(`Texto acumulado para conversación ${conversationId}: "${contenido}"`);
+        const sesionFinal = sesiones[conversationId];
+        delete sesiones[conversationId];
+        console.log(`Texto recibido, procesando conversación ${conversationId}`);
+        await procesarSesion(sesionFinal, conversationId);
+        return;
       }
-      const sesionFinal = sesiones[conversationId];
-      delete sesiones[conversationId];
-      console.log(`Punto final detectado, procesando conversación ${conversationId}`);
-      await procesarSesion(sesionFinal, conversationId);
+
+      // Si NO hay sesión → buscar imagen en API de Chatwoot
+      console.log(`Texto sin sesión para conversación ${conversationId}, buscando imagen en Chatwoot...`);
+      const imagenUrl = await buscarImagenEnChatwoot(conversationId);
+      if (imagenUrl) {
+        console.log(`Imagen recuperada de API, procesando conversación ${conversationId}`);
+        const fechaPedido = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' });
+        const sesionRecuperada = {
+          textos: [contenido.trim()],
+          imagen: imagenUrl,
+          textoImagen: null,
+          fechaPedido
+        };
+        await procesarSesion(sesionRecuperada, conversationId);
+      } else {
+        console.log(`No se encontró imagen para conversación ${conversationId}, ignorando texto`);
+      }
     }
+
   } catch (error) {
     console.error('Error en webhook:', error.message);
   }
 });
 
 app.get('/', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     servicio: 'webhook-pedidos',
     sesionesActivas: Object.keys(sesiones).length
   });
