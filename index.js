@@ -5,30 +5,28 @@ const { google } = require('googleapis');
 const { Storage } = require('@google-cloud/storage');
 const app = express();
 app.use(express.json());
-
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const CHATWOOT_URL = process.env.CHATWOOT_URL;
 const CHATWOOT_TOKEN = process.env.CHATWOOT_TOKEN;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const BUCKET_NAME = process.env.BUCKET_NAME;
-
 const NUMEROS_AUTORIZADOS = [
   '3222646442',
   '573222646442',
   '+573222646442',
   '3166470923',
   '573166470923',
-  '+573166470923'
+  '+573166470923',
 ];
-
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const storage = new Storage();
+const sesiones = {};
 let escribiendoEnSheets = false;
 const colaEscritura = [];
 
 function numeroAutorizado(numero) {
   if (!numero) return false;
-  return NUMEROS_AUTORIZADOS.some(n =>
+  return NUMEROS_AUTORIZADOS.some(n => 
     numero.includes(n) || n.includes(numero)
   );
 }
@@ -50,59 +48,6 @@ async function subirImagen(buffer, filename) {
     expires: Date.now() + 7 * 24 * 60 * 60 * 1000
   });
   return url;
-}
-
-async function obtenerMensajesConversacion(conversationId) {
-  try {
-    const response = await axios.get(
-      `${CHATWOOT_URL}/api/v1/accounts/27/conversations/${conversationId}/messages`,
-      { headers: { 'api_access_token': CHATWOOT_TOKEN } }
-    );
-    return response.data.payload || [];
-  } catch (error) {
-    console.error(`Error consultando mensajes de conversación ${conversationId}:`, error.message);
-    return [];
-  }
-}
-
-async function buscarImagenAntesDeTexto(conversationId, messageId) {
-  try {
-    console.log(`Buscando imagen antes del mensaje ${messageId} en conversación ${conversationId}`);
-    const mensajes = await obtenerMensajesConversacion(conversationId);
-    
-    // Ordenar por created_at ascendente
-    const ordenados = mensajes
-      .filter(m => m.message_type === 0) // solo mensajes entrantes
-      .sort((a, b) => a.created_at - b.created_at);
-
-    // Encontrar el índice del mensaje de texto actual
-    const indiceActual = ordenados.findIndex(m => m.id === messageId);
-    if (indiceActual <= 0) {
-      console.log('No hay mensaje anterior');
-      return null;
-    }
-
-    // Revisar el mensaje inmediatamente anterior
-    const mensajeAnterior = ordenados[indiceActual - 1];
-    const tieneImagen = mensajeAnterior.attachments &&
-      mensajeAnterior.attachments.some(a => a.file_type === 'image');
-
-    if (tieneImagen) {
-      const attachment = mensajeAnterior.attachments.find(a => a.file_type === 'image');
-      console.log(`Imagen encontrada en mensaje anterior: ${attachment.data_url}`);
-      return {
-        url: attachment.data_url,
-        fechaPedido: new Date(mensajeAnterior.created_at * 1000)
-          .toLocaleString('es-CO', { timeZone: 'America/Bogota' })
-      };
-    }
-
-    console.log(`El mensaje anterior no es una imagen, ignorando texto`);
-    return null;
-  } catch (error) {
-    console.error(`Error buscando imagen anterior:`, error.message);
-    return null;
-  }
 }
 
 async function procesarConGemini(imageBuffer, textoAdicional) {
@@ -163,7 +108,7 @@ REGLAS PARA ERRORES DE ESCRITURA:
 
 REGLAS PARA EL CAMPO POR VALIDAR:
 - Si todo está claro y completo → null
-- Si la IA corrigió una palabra mal escrita o hay una duda menor → describir brevemente
+- Si la IA corrigió una palabra mal escrita o hay una duda menor → describir brevemente. Ejemplo: "Valor corregido de 13O a 130"
 - Si falta un dato crítico → indicarlo claramente. Ejemplo: "Falta dirección", "No se identificó ciudad", "Valor no especificado"
 - Los datos críticos son: nombre, teléfono, dirección, ciudad, valor
 - Si hay múltiples alertas → separarlas con " | "
@@ -304,7 +249,7 @@ app.post('/webhook', async (req, res) => {
     const body = req.body;
     if (body.event !== 'message_created') return;
     if (body.message_type !== 0 && body.message_type !== 'incoming') return;
-    const numero = body.meta?.sender?.phone_number ||
+    const numero = body.meta?.sender?.phone_number || 
                    body.conversation?.meta?.sender?.phone_number ||
                    body.sender?.phone_number || '';
     if (!numeroAutorizado(numero)) return;
@@ -313,43 +258,96 @@ app.post('/webhook', async (req, res) => {
     const contenido = body.content || '';
     const adjuntos = body.attachments || [];
     const imagen = adjuntos.find(a => a.file_type === 'image');
-    const messageId = body.id;
     console.log(`Mensaje recibido - Conv: ${conversationId} - Contenido: "${contenido}" - Imagen: ${!!imagen}`);
-
-    // TRIGGER 1: Llegó una imagen → solo registrar en log, el texto la procesará
     if (imagen) {
-      console.log(`Imagen registrada en conversación ${conversationId}, esperando texto del operador`);
+      if (sesiones[conversationId]) {
+        if (sesiones[conversationId].timer) {
+          clearTimeout(sesiones[conversationId].timer);
+          console.log(`Timer anterior cancelado para conversación ${conversationId}`);
+        }
+        if (sesiones[conversationId].imagen) {
+          console.log(`Procesando sesión anterior antes de abrir nueva`);
+          const sesionAnterior = sesiones[conversationId];
+          delete sesiones[conversationId];
+          procesarSesion(sesionAnterior, conversationId);
+        } else {
+          delete sesiones[conversationId];
+        }
+      }
+      console.log(`Abriendo sesión para conversación ${conversationId}`);
+      let fechaRaw = body.created_at;
+      let fechaObj;
+      if (!fechaRaw) {
+        fechaObj = new Date();
+      } else if (typeof fechaRaw === 'number') {
+        fechaObj = new Date(fechaRaw * 1000);
+      } else if (typeof fechaRaw === 'string') {
+        fechaObj = new Date(fechaRaw.replace(' UTC', 'Z'));
+      } else {
+        fechaObj = new Date();
+      }
+      const fechaPedido = isNaN(fechaObj.getTime())
+        ? new Date().toLocaleString('es-CO', {timeZone: 'America/Bogota'})
+        : fechaObj.toLocaleString('es-CO', {timeZone: 'America/Bogota'});
+      const sessionId = Date.now();
+      sesiones[conversationId] = {
+        sessionId: sessionId,
+        textos: [],
+        imagen: imagen.data_url,
+        textoImagen: contenido || body.attachments?.[0]?.caption || null,
+        timestamp: Date.now(),
+        fechaPedido: fechaPedido,
+        timer: setTimeout(() => {
+          const sesionActual = sesiones[conversationId];
+          if (sesionActual && sesionActual.sessionId === sessionId) {
+            console.log(`Timer alcanzado, procesando automáticamente conversación ${conversationId}`);
+            delete sesiones[conversationId];
+            procesarSesion(sesionActual, conversationId);
+          }
+        }, 45000)
+      };
+      Object.keys(sesiones).forEach(id => {
+        if (Date.now() - sesiones[id].timestamp > 600000) {
+          console.log(`Limpiando sesión expirada: ${id}`);
+          delete sesiones[id];
+        }
+      });
       return;
     }
-
-    // TRIGGER 2: Llegó un texto → verificar si mensaje anterior es imagen
-    if (contenido && contenido.trim().length > 0) {
-      console.log(`Texto recibido, consultando mensaje anterior en conversación ${conversationId}`);
-      const resultado = await buscarImagenAntesDeTexto(conversationId, messageId);
-      if (!resultado) {
-        console.log(`Mensaje anterior no es imagen, ignorando texto en conversación ${conversationId}`);
-        return;
-      }
-      console.log(`Imagen anterior encontrada, procesando pedido de conversación ${conversationId}`);
-      const sesion = {
-        textos: [contenido.trim()],
-        imagen: resultado.url,
-        textoImagen: null,
-        fechaPedido: resultado.fechaPedido
-      };
-      await procesarSesion(sesion, conversationId);
+    if (!sesiones[conversationId]) return;
+    if (contenido && contenido.trim().length > 0 && !contenido.trim().replace(/\s+/g, '').endsWith('..')) {
+      sesiones[conversationId].textos.push(contenido.trim());
+      console.log(`Texto acumulado para conversación ${conversationId}: "${contenido}"`);
+      const currentSessionId = sesiones[conversationId].sessionId;
+      if (sesiones[conversationId].timer) clearTimeout(sesiones[conversationId].timer);
+      sesiones[conversationId].timer = setTimeout(() => {
+        const sesionActual = sesiones[conversationId];
+        if (sesionActual && sesionActual.sessionId === currentSessionId) {
+          console.log(`Timer alcanzado tras texto, procesando automáticamente conversación ${conversationId}`);
+          delete sesiones[conversationId];
+          procesarSesion(sesionActual, conversationId);
+        }
+      }, 45000);
     }
-
+    if (contenido.trim().replace(/\s+/g, '').endsWith('..')) {
+      if (sesiones[conversationId]?.timer) {
+        clearTimeout(sesiones[conversationId].timer);
+      }
+      const sesionFinal = sesiones[conversationId];
+      delete sesiones[conversationId];
+      console.log(`Punto final detectado, procesando conversación ${conversationId}`);
+      await procesarSesion(sesionFinal, conversationId);
+    }
   } catch (error) {
     console.error('Error en webhook:', error.message);
   }
 });
 
 app.get('/', (req, res) => {
-  res.json({
-    status: 'ok',
+  res.json({ 
+    status: 'ok', 
     servicio: 'webhook-pedidos',
-    sesionesActivas: 0
+    sesionesActivas: Object.keys(sesiones).length
   });
 });
 
