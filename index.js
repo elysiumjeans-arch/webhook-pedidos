@@ -195,9 +195,9 @@ REGLAS PARA TIPO DE PEDIDO:
 
 REGLAS PARA DIRECCIÓN:
 - La dirección principal viene en la imagen
-- Si el operador menciona "oficina interrapidisimo" o similar → reemplazar la dirección por "Oficina Principal Interrapidísimo"
-- Si el operador menciona una dirección específica de oficina → usar esa dirección
-- La información del texto del operador tiene prioridad sobre la imagen
+- Si el operador menciona "oficina interrapidisimo" o similar → reemplazar la dirección por "Oficina Principal Interrapidísimo" no remplazaras nunca la ciudad
+- Si el operador menciona una dirección específica de oficina → usar esa dirección sin reemplazar la ciudad de la imagen 
+- La información del texto del operador tiene prioridad sobre la imagen, a excepcion de la ciudad descrita en la imagen 
 
 REGLAS PARA ERRORES DE ESCRITURA:
 - El operador puede escribir rápido y cometer errores ortográficos
