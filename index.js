@@ -403,6 +403,15 @@ app.post('/webhook', async (req, res) => {
     if (imagen) {
       if (sesiones[conversationId]?.timer) {
         clearTimeout(sesiones[conversationId].timer);
+        const sesionAnterior = sesiones[conversationId];
+        delete sesiones[conversationId];
+        console.log(`Nueva imagen llegó, procesando sesión anterior inmediatamente Conv: ${conversationId}`);
+        procesarPar({
+          imagenUrl: sesionAnterior.imagenUrl,
+          texto: '',
+          messageId: sesionAnterior.imagenMessageId,
+          fechaPedido: sesionAnterior.fechaPedido
+        }, conversationId);
       }
       const sessionId = Date.now();
       sesiones[conversationId] = {
