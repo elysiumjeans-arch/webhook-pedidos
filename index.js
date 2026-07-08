@@ -12,27 +12,115 @@ const CHATWOOT_TOKEN = process.env.CHATWOOT_TOKEN;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const BUCKET_NAME = process.env.BUCKET_NAME;
 
-const NUMEROS_AUTORIZADOS = [
-  '3222646442',
-  '573222646442',
-  '+573222646442',
-  '3166470923',
-  '573166470923',
-  '+573166470923'
-];
+const CONVERSATION_ID_PRODUCCION = 5315;
+const ARCHIVO_PROCESADOS = 'procesados/mensajes_procesados.json';
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const storage = new Storage();
 let escribiendoEnSheets = false;
 const colaEscritura = [];
+let idsProcesados = new Set();
+let procesadosCargados = false;
 
-function numeroAutorizado(numero) {
-  if (!numero) return false;
-  return NUMEROS_AUTORIZADOS.some(n =>
-    numero.includes(n) || n.includes(numero)
-  );
+// ─── Fecha de inicio (hoy a las 00:00:00) ────────────────────────────────────
+function obtenerInicioHoy() {
+  const hoy = new Date();
+  hoy.setHours(0, 0, 0, 0);
+  return Math.floor(hoy.getTime() / 1000);
 }
 
+// ─── Cargar IDs procesados desde Cloud Storage ───────────────────────────────
+async function cargarIdsProcesados() {
+  try {
+    const bucket = storage.bucket(BUCKET_NAME);
+    const file = bucket.file(ARCHIVO_PROCESADOS);
+    const [exists] = await file.exists();
+    if (!exists) {
+      console.log('Archivo de procesados no existe, iniciando vacío');
+      idsProcesados = new Set();
+      procesadosCargados = true;
+      return;
+    }
+    const [contenido] = await file.download();
+    const datos = JSON.parse(contenido.toString());
+    idsProcesados = new Set(datos.ids || []);
+    console.log(`IDs procesados cargados: ${idsProcesados.size}`);
+    procesadosCargados = true;
+  } catch (error) {
+    console.error('Error cargando IDs procesados:', error.message);
+    idsProcesados = new Set();
+    procesadosCargados = true;
+  }
+}
+
+// ─── Guardar IDs procesados en Cloud Storage ─────────────────────────────────
+async function guardarIdsProcesados() {
+  try {
+    const bucket = storage.bucket(BUCKET_NAME);
+    const file = bucket.file(ARCHIVO_PROCESADOS);
+    await file.save(JSON.stringify({ ids: [...idsProcesados] }), {
+      contentType: 'application/json'
+    });
+  } catch (error) {
+    console.error('Error guardando IDs procesados:', error.message);
+  }
+}
+
+// ─── Obtener mensajes de la conversación ─────────────────────────────────────
+async function obtenerMensajes(conversationId) {
+  try {
+    const response = await axios.get(
+      `${CHATWOOT_URL}/api/v1/accounts/27/conversations/${conversationId}/messages`,
+      { headers: { 'api_access_token': CHATWOOT_TOKEN } }
+    );
+    return response.data.payload || [];
+  } catch (error) {
+    console.error('Error obteniendo mensajes:', error.message);
+    return [];
+  }
+}
+
+// ─── Buscar pares imagen+texto no procesados ─────────────────────────────────
+async function buscarParesNuevos(conversationId) {
+  const inicioHoy = obtenerInicioHoy();
+  const mensajes = await obtenerMensajes(conversationId);
+
+  // Solo mensajes entrantes de hoy, ordenados cronológicamente
+  const entrantes = mensajes
+    .filter(m => m.message_type === 0 && m.created_at >= inicioHoy)
+    .sort((a, b) => a.created_at - b.created_at);
+
+  const pares = [];
+
+  for (let i = 0; i < entrantes.length; i++) {
+    const mensaje = entrantes[i];
+    const tieneImagen = mensaje.attachments &&
+      mensaje.attachments.some(a => a.file_type === 'image');
+    const tieneTexto = mensaje.content && mensaje.content.trim().length > 0;
+
+    // Si es texto y el mensaje anterior es imagen
+    if (tieneTexto && i > 0) {
+      const anterior = entrantes[i - 1];
+      const anteriorEsImagen = anterior.attachments &&
+        anterior.attachments.some(a => a.file_type === 'image');
+
+      if (anteriorEsImagen && !idsProcesados.has(mensaje.id)) {
+        const attachment = anterior.attachments.find(a => a.file_type === 'image');
+        pares.push({
+          imagenUrl: attachment.data_url,
+          texto: mensaje.content.trim(),
+          messageId: mensaje.id,
+          fechaPedido: new Date(anterior.created_at * 1000)
+            .toLocaleString('es-CO', { timeZone: 'America/Bogota' })
+        });
+      }
+    }
+  }
+
+  return pares;
+}
+
+// ─── Descargar imagen ─────────────────────────────────────────────────────────
 async function descargarImagen(url) {
   const response = await axios.get(url, {
     headers: { 'api_access_token': CHATWOOT_TOKEN },
@@ -41,6 +129,7 @@ async function descargarImagen(url) {
   return Buffer.from(response.data);
 }
 
+// ─── Subir imagen a Cloud Storage ────────────────────────────────────────────
 async function subirImagen(buffer, filename) {
   const bucket = storage.bucket(BUCKET_NAME);
   const file = bucket.file(`pedidos/${filename}`);
@@ -52,59 +141,7 @@ async function subirImagen(buffer, filename) {
   return url;
 }
 
-async function obtenerMensajesConversacion(conversationId) {
-  try {
-    const response = await axios.get(
-      `${CHATWOOT_URL}/api/v1/accounts/27/conversations/${conversationId}/messages`,
-      { headers: { 'api_access_token': CHATWOOT_TOKEN } }
-    );
-    return response.data.payload || [];
-  } catch (error) {
-    console.error(`Error consultando mensajes de conversación ${conversationId}:`, error.message);
-    return [];
-  }
-}
-
-async function buscarImagenAntesDeTexto(conversationId, messageId) {
-  try {
-    console.log(`Buscando imagen antes del mensaje ${messageId} en conversación ${conversationId}`);
-    const mensajes = await obtenerMensajesConversacion(conversationId);
-    
-    // Ordenar por created_at ascendente
-    const ordenados = mensajes
-      .filter(m => m.message_type === 0) // solo mensajes entrantes
-      .sort((a, b) => a.created_at - b.created_at);
-
-    // Encontrar el índice del mensaje de texto actual
-    const indiceActual = ordenados.findIndex(m => m.id === messageId);
-    if (indiceActual <= 0) {
-      console.log('No hay mensaje anterior');
-      return null;
-    }
-
-    // Revisar el mensaje inmediatamente anterior
-    const mensajeAnterior = ordenados[indiceActual - 1];
-    const tieneImagen = mensajeAnterior.attachments &&
-      mensajeAnterior.attachments.some(a => a.file_type === 'image');
-
-    if (tieneImagen) {
-      const attachment = mensajeAnterior.attachments.find(a => a.file_type === 'image');
-      console.log(`Imagen encontrada en mensaje anterior: ${attachment.data_url}`);
-      return {
-        url: attachment.data_url,
-        fechaPedido: new Date(mensajeAnterior.created_at * 1000)
-          .toLocaleString('es-CO', { timeZone: 'America/Bogota' })
-      };
-    }
-
-    console.log(`El mensaje anterior no es una imagen, ignorando texto`);
-    return null;
-  } catch (error) {
-    console.error(`Error buscando imagen anterior:`, error.message);
-    return null;
-  }
-}
-
+// ─── Procesar con Gemini ──────────────────────────────────────────────────────
 async function procesarConGemini(imageBuffer, textoAdicional) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
   const imagePart = {
@@ -197,6 +234,7 @@ Devuelve SOLO el JSON, sin explicaciones ni texto adicional.
   return JSON.parse(jsonMatch[0]);
 }
 
+// ─── Escribir en Sheets con cola ─────────────────────────────────────────────
 async function escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, textoAdicional) {
   return new Promise((resolve, reject) => {
     colaEscritura.push({ datos, imagenUrl, fechaPedido, textoImagen, textoAdicional, resolve, reject });
@@ -277,67 +315,52 @@ async function _escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, tex
   console.log('Fila escrita exitosamente en fila:', ultimaFila);
 }
 
-async function procesarSesion(sesion, conversationId) {
-  if (!sesion) return;
+// ─── Procesar un par imagen+texto ────────────────────────────────────────────
+async function procesarPar(par, conversationId) {
   try {
-    console.log(`Procesando sesión de conversación ${conversationId}`);
-    if (!sesion.imagen) {
-      console.log('Sesión sin imagen, descartando');
-      return;
-    }
-    const imageBuffer = await descargarImagen(sesion.imagen);
+    console.log(`Procesando par - MessageId: ${par.messageId} - Texto: "${par.texto}"`);
+    const imageBuffer = await descargarImagen(par.imagenUrl);
     const filename = `pedido_${conversationId}_${Date.now()}.jpg`;
     const imagenUrl = await subirImagen(imageBuffer, filename);
-    const textoAdicional = sesion.textos.join(' ');
-    console.log('Textos en sesión:', JSON.stringify(sesion.textos));
-    const datos = await procesarConGemini(imageBuffer, textoAdicional);
-    await escribirEnSheets(datos, imagenUrl, sesion.fechaPedido, sesion.textoImagen, textoAdicional);
+    const datos = await procesarConGemini(imageBuffer, par.texto);
+    await escribirEnSheets(datos, imagenUrl, par.fechaPedido, null, par.texto);
+    idsProcesados.add(par.messageId);
+    await guardarIdsProcesados();
     console.log('Pedido procesado exitosamente:', datos);
   } catch (error) {
-    console.error(`Error procesando sesión ${conversationId}:`, error.message);
+    console.error(`Error procesando par ${par.messageId}:`, error.message);
   }
 }
 
+// ─── Webhook ──────────────────────────────────────────────────────────────────
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   try {
+    if (!procesadosCargados) await cargarIdsProcesados();
+
     const body = req.body;
     if (body.event !== 'message_created') return;
     if (body.message_type !== 0 && body.message_type !== 'incoming') return;
-    const numero = body.meta?.sender?.phone_number ||
-                   body.conversation?.meta?.sender?.phone_number ||
-                   body.sender?.phone_number || '';
-    if (!numeroAutorizado(numero)) return;
+
     const conversationId = body.conversation?.id;
-    if (!conversationId) return;
+    if (conversationId !== CONVERSATION_ID_PRODUCCION) return;
+
     const contenido = body.content || '';
     const adjuntos = body.attachments || [];
     const imagen = adjuntos.find(a => a.file_type === 'image');
-    const messageId = body.id;
+
     console.log(`Mensaje recibido - Conv: ${conversationId} - Contenido: "${contenido}" - Imagen: ${!!imagen}`);
 
-    // TRIGGER 1: Llegó una imagen → solo registrar en log, el texto la procesará
-    if (imagen) {
-      console.log(`Imagen registrada en conversación ${conversationId}, esperando texto del operador`);
+    // Buscar y procesar pares nuevos en la conversación
+    const pares = await buscarParesNuevos(conversationId);
+    if (pares.length === 0) {
+      console.log('No hay pares nuevos para procesar');
       return;
     }
 
-    // TRIGGER 2: Llegó un texto → verificar si mensaje anterior es imagen
-    if (contenido && contenido.trim().length > 0) {
-      console.log(`Texto recibido, consultando mensaje anterior en conversación ${conversationId}`);
-      const resultado = await buscarImagenAntesDeTexto(conversationId, messageId);
-      if (!resultado) {
-        console.log(`Mensaje anterior no es imagen, ignorando texto en conversación ${conversationId}`);
-        return;
-      }
-      console.log(`Imagen anterior encontrada, procesando pedido de conversación ${conversationId}`);
-      const sesion = {
-        textos: [contenido.trim()],
-        imagen: resultado.url,
-        textoImagen: null,
-        fechaPedido: resultado.fechaPedido
-      };
-      await procesarSesion(sesion, conversationId);
+    console.log(`Encontrados ${pares.length} pares nuevos para procesar`);
+    for (const par of pares) {
+      await procesarPar(par, conversationId);
     }
 
   } catch (error) {
@@ -349,11 +372,12 @@ app.get('/', (req, res) => {
   res.json({
     status: 'ok',
     servicio: 'webhook-pedidos',
-    sesionesActivas: 0
+    idsProcesados: idsProcesados.size
   });
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
+  await cargarIdsProcesados();
 });
