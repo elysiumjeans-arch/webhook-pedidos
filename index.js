@@ -20,6 +20,7 @@ const storage = new Storage();
 let escribiendoEnSheets = false;
 const colaEscritura = [];
 let idsProcesados = new Set();
+let ultimoBarrido = null;
 const sesiones = {};
 let procesadosCargados = false;
 
@@ -43,7 +44,8 @@ async function cargarIdsProcesados() {
     const [contenido] = await file.download();
     const datos = JSON.parse(contenido.toString());
     idsProcesados = new Set(datos.ids || []);
-    console.log(`IDs procesados cargados: ${idsProcesados.size}`);
+    ultimoBarrido = datos.ultimoBarrido || obtenerInicioHoy();
+    console.log(`IDs procesados cargados: ${idsProcesados.size}, último barrido: ${new Date(ultimoBarrido * 1000).toLocaleString('es-CO', {timeZone: 'America/Bogota'})}`);
     procesadosCargados = true;
   } catch (error) {
     console.error('Error cargando IDs procesados:', error.message);
@@ -56,7 +58,7 @@ async function guardarIdsProcesados() {
   try {
     const bucket = storage.bucket(BUCKET_NAME);
     const file = bucket.file(ARCHIVO_PROCESADOS);
-    await file.save(JSON.stringify({ ids: [...idsProcesados] }), {
+    await file.save(JSON.stringify({ ids: [...idsProcesados], ultimoBarrido }), {
       contentType: 'application/json'
     });
   } catch (error) {
@@ -363,6 +365,60 @@ async function barridoMensajesAnteriores(conversationId, messageId) {
     if (pendientes.length === 0) return;
     console.log(`Barrido encontró ${pendientes.length} pares pendientes`);
     await Promise.all(pendientes.map(par => procesarPar(par, conversationId)));
+  } catch (error) {
+    console.error('Error en barrido:', error.message);
+  }
+}
+async function buscarParesNuevos(conversationId, desde, hasta) {
+  try {
+    const mensajes = await obtenerMensajes(conversationId);
+    const entrantes = mensajes
+      .filter(m => m.message_type === 0 && m.created_at >= desde && m.created_at <= hasta)
+      .sort((a, b) => a.created_at - b.created_at);
+
+    const pares = [];
+    for (let i = 1; i < entrantes.length; i++) {
+      const mensaje = entrantes[i];
+      if (!esTextoValido(mensaje.content)) continue;
+      if (idsProcesados.has(mensaje.id)) continue;
+
+      const anterior = entrantes[i - 1];
+      const anteriorEsImagen = anterior.attachments &&
+        anterior.attachments.some(a => a.file_type === 'image');
+
+      if (anteriorEsImagen) {
+        const attachment = anterior.attachments.find(a => a.file_type === 'image');
+        pares.push({
+          imagenUrl: attachment.data_url,
+          texto: mensaje.content.trim(),
+          messageId: mensaje.id,
+          fechaPedido: new Date(anterior.created_at * 1000)
+            .toLocaleString('es-CO', { timeZone: 'America/Bogota' })
+        });
+      }
+    }
+    return pares;
+  } catch (error) {
+    console.error('Error en buscarParesNuevos:', error.message);
+    return [];
+  }
+}
+async function ejecutarBarrido(conversationId) {
+  try {
+    const ahora = Math.floor(Date.now() / 1000);
+    const desde = ultimoBarrido || obtenerInicioHoy();
+    console.log(`Barrido desde ${new Date(desde * 1000).toLocaleString('es-CO', {timeZone: 'America/Bogota'})} hasta ahora`);
+    const pares = await buscarParesNuevos(conversationId, desde, ahora);
+    if (pares.length === 0) {
+      console.log('Barrido sin pares pendientes');
+      ultimoBarrido = ahora;
+      guardarIdsProcesados();
+      return;
+    }
+    console.log(`Barrido encontró ${pares.length} pares pendientes`);
+    await Promise.all(pares.map(par => procesarPar(par, conversationId)));
+    ultimoBarrido = ahora;
+    guardarIdsProcesados();
   } catch (error) {
     console.error('Error en barrido:', error.message);
   }
