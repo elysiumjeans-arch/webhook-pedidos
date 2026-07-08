@@ -20,6 +20,7 @@ const storage = new Storage();
 let escribiendoEnSheets = false;
 const colaEscritura = [];
 let idsProcesados = new Set();
+const sesiones = {};
 let procesadosCargados = false;
 
 function obtenerInicioHoy() {
@@ -76,7 +77,7 @@ async function obtenerMensajes(conversationId) {
   }
 }
 
-async function buscarParesNuevos(conversationId) {
+async function buscarTextoDespuesDeImagen(conversationId, imagenMessageId) {
   const inicioHoy = obtenerInicioHoy();
   const mensajes = await obtenerMensajes(conversationId);
 
@@ -84,31 +85,46 @@ async function buscarParesNuevos(conversationId) {
     .filter(m => m.message_type === 0 && m.created_at >= inicioHoy)
     .sort((a, b) => a.created_at - b.created_at);
 
-  const pares = [];
+  const indiceImagen = entrantes.findIndex(m => m.id === imagenMessageId);
+  if (indiceImagen === -1 || indiceImagen === entrantes.length - 1) return null;
 
-  for (let i = 0; i < entrantes.length; i++) {
-    const mensaje = entrantes[i];
-    const tieneTexto = mensaje.content && mensaje.content.trim().length > 0;
+  const siguiente = entrantes[indiceImagen + 1];
+  const tieneTexto = siguiente.content && siguiente.content.trim().length > 0;
+  const noEsImagen = !siguiente.attachments || !siguiente.attachments.some(a => a.file_type === 'image');
 
-    if (tieneTexto && i > 0) {
-      const anterior = entrantes[i - 1];
-      const anteriorEsImagen = anterior.attachments &&
-        anterior.attachments.some(a => a.file_type === 'image');
-
-      if (anteriorEsImagen && !idsProcesados.has(mensaje.id)) {
-        const attachment = anterior.attachments.find(a => a.file_type === 'image');
-        pares.push({
-          imagenUrl: attachment.data_url,
-          texto: mensaje.content.trim(),
-          messageId: mensaje.id,
-          fechaPedido: new Date(anterior.created_at * 1000)
-            .toLocaleString('es-CO', { timeZone: 'America/Bogota' })
-        });
-      }
-    }
+  if (tieneTexto && noEsImagen && !idsProcesados.has(siguiente.id)) {
+    return {
+      texto: siguiente.content.trim(),
+      messageId: siguiente.id
+    };
   }
+  return null;
+}
 
-  return pares;
+async function buscarImagenAntesDeTexto(conversationId, messageId) {
+  const inicioHoy = obtenerInicioHoy();
+  const mensajes = await obtenerMensajes(conversationId);
+
+  const entrantes = mensajes
+    .filter(m => m.message_type === 0 && m.created_at >= inicioHoy)
+    .sort((a, b) => a.created_at - b.created_at);
+
+  const indiceTexto = entrantes.findIndex(m => m.id === messageId);
+  if (indiceTexto <= 0) return null;
+
+  const anterior = entrantes[indiceTexto - 1];
+  const anteriorEsImagen = anterior.attachments &&
+    anterior.attachments.some(a => a.file_type === 'image');
+
+  if (anteriorEsImagen && !idsProcesados.has(messageId)) {
+    const attachment = anterior.attachments.find(a => a.file_type === 'image');
+    return {
+      imagenUrl: attachment.data_url,
+      fechaPedido: new Date(anterior.created_at * 1000)
+        .toLocaleString('es-CO', { timeZone: 'America/Bogota' })
+    };
+  }
+  return null;
 }
 
 async function descargarImagen(url) {
@@ -330,14 +346,97 @@ app.post('/webhook', async (req, res) => {
     const contenido = body.content || '';
     const adjuntos = body.attachments || [];
     const imagen = adjuntos.find(a => a.file_type === 'image');
+    const messageId = body.id;
     console.log(`Mensaje recibido - Conv: ${conversationId} - Contenido: "${contenido}" - Imagen: ${!!imagen}`);
-    const pares = await buscarParesNuevos(conversationId);
-    if (pares.length === 0) {
-      console.log('No hay pares nuevos para procesar');
+
+    // CASO 1: Llegó imagen → guardar sesión y esperar texto
+    if (imagen) {
+      if (sesiones[conversationId]?.timer) {
+        clearTimeout(sesiones[conversationId].timer);
+      }
+      const sessionId = Date.now();
+      sesiones[conversationId] = {
+        sessionId,
+        imagenUrl: imagen.data_url,
+        imagenMessageId: messageId,
+        fechaPedido: new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' }),
+        timer: setTimeout(async () => {
+          const sesionActual = sesiones[conversationId];
+          if (!sesionActual || sesionActual.sessionId !== sessionId) return;
+          console.log(`Timer alcanzado para Conv: ${conversationId}, buscando texto en API...`);
+          const resultado = await buscarTextoDespuesDeImagen(conversationId, messageId);
+          delete sesiones[conversationId];
+          if (resultado) {
+            console.log(`Texto encontrado via API: "${resultado.texto}"`);
+            idsProcesados.add(resultado.messageId);
+            guardarIdsProcesados();
+            await procesarPar({
+              imagenUrl: sesionActual.imagenUrl,
+              texto: resultado.texto,
+              messageId: resultado.messageId,
+              fechaPedido: sesionActual.fechaPedido
+            }, conversationId);
+          } else {
+            console.log(`No se encontró texto, registrando solo imagen`);
+            await procesarPar({
+              imagenUrl: sesionActual.imagenUrl,
+              texto: '',
+              messageId: sessionId,
+              fechaPedido: sesionActual.fechaPedido
+            }, conversationId);
+          }
+        }, 45000)
+      };
+      console.log(`Sesión abierta para Conv: ${conversationId}, esperando texto...`);
       return;
     }
-    console.log(`Encontrados ${pares.length} pares nuevos para procesar`);
-    await Promise.all(pares.map(par => procesarPar(par, conversationId)));
+
+    // CASO 2: Llegó texto
+    if (contenido && contenido.trim().length > 0) {
+
+      // Si hay sesión abierta → procesar inmediatamente
+      if (sesiones[conversationId]) {
+        clearTimeout(sesiones[conversationId].timer);
+        const sesionActual = sesiones[conversationId];
+        delete sesiones[conversationId];
+        if (idsProcesados.has(messageId)) {
+          console.log(`Texto ${messageId} ya procesado, ignorando`);
+          return;
+        }
+        idsProcesados.add(messageId);
+        guardarIdsProcesados();
+        console.log(`Texto recibido con sesión abierta, procesando Conv: ${conversationId}`);
+        await procesarPar({
+          imagenUrl: sesionActual.imagenUrl,
+          texto: contenido.trim(),
+          messageId,
+          fechaPedido: sesionActual.fechaPedido
+        }, conversationId);
+        return;
+      }
+
+      // Si NO hay sesión → buscar imagen anterior en API
+      if (idsProcesados.has(messageId)) {
+        console.log(`Texto ${messageId} ya procesado, ignorando`);
+        return;
+      }
+      console.log(`Texto sin sesión, buscando imagen anterior en API...`);
+      const resultado = await buscarImagenAntesDeTexto(conversationId, messageId);
+      if (resultado) {
+        idsProcesados.add(messageId);
+        guardarIdsProcesados();
+        console.log(`Imagen anterior encontrada, procesando Conv: ${conversationId}`);
+        await procesarPar({
+          imagenUrl: resultado.imagenUrl,
+          texto: contenido.trim(),
+          messageId,
+          fechaPedido: resultado.fechaPedido
+        }, conversationId);
+      } else {
+        console.log(`No hay imagen anterior, ignorando texto`);
+      }
+    }
+
   } catch (error) {
     console.error('Error en webhook:', error.message);
   }
