@@ -172,6 +172,7 @@ REGLAS PARA PRODUCTOS:
 - Varios productos diferentes: "34 cla am + 36 hop ne"
 - Varios productos iguales: "34 cla am x2"
 - El color puede ser: ne (negro), ao (azul oscuro), ac (azul claro), am (amarillo), rojo, entre otros
+- Las referencias pueden o no, estar acompañadas de diseños del producto como rot (desgastes o rotos) : "34 cla rot am"
 - Las referencias pueden ser: cla, hop, ov cargo, entre otras
 
 REGLAS PARA VALORES:
