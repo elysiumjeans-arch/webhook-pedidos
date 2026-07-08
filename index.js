@@ -22,14 +22,12 @@ const colaEscritura = [];
 let idsProcesados = new Set();
 let procesadosCargados = false;
 
-// ─── Fecha de inicio (hoy a las 00:00:00) ────────────────────────────────────
 function obtenerInicioHoy() {
   const hoy = new Date();
   hoy.setHours(0, 0, 0, 0);
   return Math.floor(hoy.getTime() / 1000);
 }
 
-// ─── Cargar IDs procesados desde Cloud Storage ───────────────────────────────
 async function cargarIdsProcesados() {
   try {
     const bucket = storage.bucket(BUCKET_NAME);
@@ -53,7 +51,6 @@ async function cargarIdsProcesados() {
   }
 }
 
-// ─── Guardar IDs procesados en Cloud Storage ─────────────────────────────────
 async function guardarIdsProcesados() {
   try {
     const bucket = storage.bucket(BUCKET_NAME);
@@ -66,7 +63,6 @@ async function guardarIdsProcesados() {
   }
 }
 
-// ─── Obtener mensajes de la conversación ─────────────────────────────────────
 async function obtenerMensajes(conversationId) {
   try {
     const response = await axios.get(
@@ -80,12 +76,10 @@ async function obtenerMensajes(conversationId) {
   }
 }
 
-// ─── Buscar pares imagen+texto no procesados ─────────────────────────────────
 async function buscarParesNuevos(conversationId) {
   const inicioHoy = obtenerInicioHoy();
   const mensajes = await obtenerMensajes(conversationId);
 
-  // Solo mensajes entrantes de hoy, ordenados cronológicamente
   const entrantes = mensajes
     .filter(m => m.message_type === 0 && m.created_at >= inicioHoy)
     .sort((a, b) => a.created_at - b.created_at);
@@ -94,11 +88,8 @@ async function buscarParesNuevos(conversationId) {
 
   for (let i = 0; i < entrantes.length; i++) {
     const mensaje = entrantes[i];
-    const tieneImagen = mensaje.attachments &&
-      mensaje.attachments.some(a => a.file_type === 'image');
     const tieneTexto = mensaje.content && mensaje.content.trim().length > 0;
 
-    // Si es texto y el mensaje anterior es imagen
     if (tieneTexto && i > 0) {
       const anterior = entrantes[i - 1];
       const anteriorEsImagen = anterior.attachments &&
@@ -120,7 +111,6 @@ async function buscarParesNuevos(conversationId) {
   return pares;
 }
 
-// ─── Descargar imagen ─────────────────────────────────────────────────────────
 async function descargarImagen(url) {
   const response = await axios.get(url, {
     headers: { 'api_access_token': CHATWOOT_TOKEN },
@@ -129,7 +119,6 @@ async function descargarImagen(url) {
   return Buffer.from(response.data);
 }
 
-// ─── Subir imagen a Cloud Storage ────────────────────────────────────────────
 async function subirImagen(buffer, filename) {
   const bucket = storage.bucket(BUCKET_NAME);
   const file = bucket.file(`pedidos/${filename}`);
@@ -141,7 +130,6 @@ async function subirImagen(buffer, filename) {
   return url;
 }
 
-// ─── Procesar con Gemini ──────────────────────────────────────────────────────
 async function procesarConGemini(imageBuffer, textoAdicional) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
   const imagePart = {
@@ -234,7 +222,6 @@ Devuelve SOLO el JSON, sin explicaciones ni texto adicional.
   return JSON.parse(jsonMatch[0]);
 }
 
-// ─── Escribir en Sheets con cola ─────────────────────────────────────────────
 async function escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, textoAdicional) {
   return new Promise((resolve, reject) => {
     colaEscritura.push({ datos, imagenUrl, fechaPedido, textoImagen, textoAdicional, resolve, reject });
@@ -315,15 +302,11 @@ async function _escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, tex
   console.log('Fila escrita exitosamente en fila:', ultimaFila);
 }
 
-// ─── Procesar un par imagen+texto ────────────────────────────────────────────
 async function procesarPar(par, conversationId) {
   try {
     console.log(`Procesando par - MessageId: ${par.messageId} - Texto: "${par.texto}"`);
-    
-    // Marcar como procesado inmediatamente en memoria
     idsProcesados.add(par.messageId);
-    guardarIdsProcesados(); // sin await
-
+    guardarIdsProcesados();
     const imageBuffer = await descargarImagen(par.imagenUrl);
     const filename = `pedido_${conversationId}_${Date.now()}.jpg`;
     const imagenUrl = await subirImagen(imageBuffer, filename);
@@ -335,36 +318,26 @@ async function procesarPar(par, conversationId) {
   }
 }
 
-// ─── Webhook ──────────────────────────────────────────────────────────────────
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   try {
     if (!procesadosCargados) await cargarIdsProcesados();
-
     const body = req.body;
     if (body.event !== 'message_created') return;
     if (body.message_type !== 0 && body.message_type !== 'incoming') return;
-
     const conversationId = body.conversation?.id;
     if (conversationId !== CONVERSATION_ID_PRODUCCION) return;
-
     const contenido = body.content || '';
     const adjuntos = body.attachments || [];
     const imagen = adjuntos.find(a => a.file_type === 'image');
-
     console.log(`Mensaje recibido - Conv: ${conversationId} - Contenido: "${contenido}" - Imagen: ${!!imagen}`);
-
-    // Buscar y procesar pares nuevos en la conversación
     const pares = await buscarParesNuevos(conversationId);
     if (pares.length === 0) {
       console.log('No hay pares nuevos para procesar');
       return;
     }
-
     console.log(`Encontrados ${pares.length} pares nuevos para procesar`);
     await Promise.all(pares.map(par => procesarPar(par, conversationId)));
-    }
-
   } catch (error) {
     console.error('Error en webhook:', error.message);
   }
