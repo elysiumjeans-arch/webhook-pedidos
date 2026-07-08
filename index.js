@@ -511,22 +511,54 @@ app.post('/webhook', async (req, res) => {
 
       // Si hay sesión abierta → procesar inmediatamente
       if (sesiones[conversationId]) {
-        clearTimeout(sesiones[conversationId].timer);
-        const sesionActual = sesiones[conversationId];
-        delete sesiones[conversationId];
         if (idsProcesados.has(messageId)) {
           console.log(`Texto ${messageId} ya procesado, ignorando`);
           return;
         }
-        idsProcesados.add(messageId);
-        guardarIdsProcesados();
-        console.log(`Texto recibido con sesión abierta, procesando Conv: ${conversationId}`);
-        await procesarPar({
-          imagenUrl: sesionActual.imagenUrl,
-          texto: contenido.trim(),
-          messageId,
-          fechaPedido: sesionActual.fechaPedido
-        }, conversationId);
+        // Verificar que el mensaje anterior en Chatwoot sea la imagen de la sesión actual
+        const imagenAnterior = await buscarImagenAntesDeTexto(conversationId, messageId);
+        const sesionActual = sesiones[conversationId];
+      
+        if (imagenAnterior && imagenAnterior.imagenUrl === sesionActual.imagenUrl) {
+          // El texto corresponde a la imagen de la sesión → procesar normalmente
+          clearTimeout(sesionActual.timer);
+          delete sesiones[conversationId];
+          idsProcesados.add(messageId);
+          guardarIdsProcesados();
+          console.log(`Texto verificado con imagen de sesión, procesando Conv: ${conversationId}`);
+          await procesarPar({
+            imagenUrl: sesionActual.imagenUrl,
+            texto: contenido.trim(),
+            messageId,
+            fechaPedido: sesionActual.fechaPedido
+          }, conversationId);
+        } else {
+          // El texto NO corresponde a la imagen de la sesión → procesar sesión sin texto y buscar imagen correcta
+          console.log(`Texto no corresponde a imagen de sesión, procesando sesión anterior sin texto`);
+          clearTimeout(sesionActual.timer);
+          delete sesiones[conversationId];
+          procesarPar({
+            imagenUrl: sesionActual.imagenUrl,
+            texto: '',
+            messageId: sesionActual.imagenMessageId,
+            fechaPedido: sesionActual.fechaPedido
+          }, conversationId);
+      
+          // Buscar imagen correcta para este texto
+          if (imagenAnterior) {
+            idsProcesados.add(messageId);
+            guardarIdsProcesados();
+            console.log(`Imagen correcta encontrada para texto, procesando Conv: ${conversationId}`);
+            await procesarPar({
+              imagenUrl: imagenAnterior.imagenUrl,
+              texto: contenido.trim(),
+              messageId,
+              fechaPedido: imagenAnterior.fechaPedido
+            }, conversationId);
+          } else {
+            console.log(`No se encontró imagen correcta para texto, ignorando`);
+          }
+        }
         return;
       }
 
