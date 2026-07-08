@@ -334,7 +334,6 @@ async function procesarPar(par, conversationId) {
     console.error(`Error procesando par ${par.messageId}:`, error.message);
   }
 }
-}
 
 // ─── Webhook ──────────────────────────────────────────────────────────────────
 app.post('/webhook', async (req, res) => {
