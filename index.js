@@ -319,17 +319,21 @@ async function _escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, tex
 async function procesarPar(par, conversationId) {
   try {
     console.log(`Procesando par - MessageId: ${par.messageId} - Texto: "${par.texto}"`);
+    
+    // Marcar como procesado inmediatamente en memoria
+    idsProcesados.add(par.messageId);
+    guardarIdsProcesados(); // sin await
+
     const imageBuffer = await descargarImagen(par.imagenUrl);
     const filename = `pedido_${conversationId}_${Date.now()}.jpg`;
     const imagenUrl = await subirImagen(imageBuffer, filename);
     const datos = await procesarConGemini(imageBuffer, par.texto);
     await escribirEnSheets(datos, imagenUrl, par.fechaPedido, null, par.texto);
-    idsProcesados.add(par.messageId);
-    await guardarIdsProcesados();
     console.log('Pedido procesado exitosamente:', datos);
   } catch (error) {
     console.error(`Error procesando par ${par.messageId}:`, error.message);
   }
+}
 }
 
 // ─── Webhook ──────────────────────────────────────────────────────────────────
@@ -359,8 +363,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     console.log(`Encontrados ${pares.length} pares nuevos para procesar`);
-    for (const par of pares) {
-      await procesarPar(par, conversationId);
+    await Promise.all(pares.map(par => procesarPar(par, conversationId)));
     }
 
   } catch (error) {
