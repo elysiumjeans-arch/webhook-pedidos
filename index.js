@@ -217,7 +217,7 @@ Texto adicional del operador: "${textoAdicional}"
 Extrae los siguientes datos y devuelve SOLO un JSON válido sin texto adicional ni backticks:
 {
   "nombre": "nombre completo del cliente extraído de la imagen",
-  "telefono": "número de 10 dígitos que comienza por 3, sin prefijo +57",
+  "telefono": "número de 10 dígitos que comienza por 3, sin prefijo +57, si no se encuentra en la imagen buscar el +57 y colocar el numero de 10 digitos despues de +57",
   "direccion": "dirección completa de entrega",
   "ciudad": "ciudad o municipio de Colombia",
   "producto": "descripción completa del producto o productos. Primero la talla, luego la referencia y el color. Si son varios, separados por coma",
