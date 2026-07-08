@@ -317,7 +317,56 @@ async function _escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, tex
   });
   console.log('Fila escrita exitosamente en fila:', ultimaFila);
 }
+function esTextoValido(texto) {
+  if (!texto || texto.trim().length === 0) return false;
+  // Ignorar mensajes con solo caracteres repetidos como ---, ..., ===
+  const soloCaracteresRepetidos = /^[\-\.\=\_\*\#\s]+$/.test(texto.trim());
+  return !soloCaracteresRepetidos;
+}
+async function barridoMensajesAnteriores(conversationId, messageId) {
+  try {
+    const inicioHoy = obtenerInicioHoy();
+    const mensajes = await obtenerMensajes(conversationId);
+    const entrantes = mensajes
+      .filter(m => m.message_type === 0 && m.created_at >= inicioHoy)
+      .sort((a, b) => a.created_at - b.created_at);
 
+    const indiceActual = entrantes.findIndex(m => m.id === messageId);
+    if (indiceActual <= 0) return;
+
+    // Revisar los 4 mensajes anteriores al par recién procesado
+    const inicio = Math.max(0, indiceActual - 4);
+    const pendientes = [];
+
+    for (let i = inicio; i < indiceActual; i++) {
+      const mensaje = entrantes[i];
+      if (!esTextoValido(mensaje.content)) continue;
+      if (idsProcesados.has(mensaje.id)) continue;
+      if (i === 0) continue;
+
+      const anterior = entrantes[i - 1];
+      const anteriorEsImagen = anterior.attachments &&
+        anterior.attachments.some(a => a.file_type === 'image');
+
+      if (anteriorEsImagen) {
+        const attachment = anterior.attachments.find(a => a.file_type === 'image');
+        pendientes.push({
+          imagenUrl: attachment.data_url,
+          texto: mensaje.content.trim(),
+          messageId: mensaje.id,
+          fechaPedido: new Date(anterior.created_at * 1000)
+            .toLocaleString('es-CO', { timeZone: 'America/Bogota' })
+        });
+      }
+    }
+
+    if (pendientes.length === 0) return;
+    console.log(`Barrido encontró ${pendientes.length} pares pendientes`);
+    await Promise.all(pendientes.map(par => procesarPar(par, conversationId)));
+  } catch (error) {
+    console.error('Error en barrido:', error.message);
+  }
+}
 async function procesarPar(par, conversationId) {
   try {
     console.log(`Procesando par - MessageId: ${par.messageId} - Texto: "${par.texto}"`);
@@ -329,6 +378,7 @@ async function procesarPar(par, conversationId) {
     const datos = await procesarConGemini(imageBuffer, par.texto);
     await escribirEnSheets(datos, imagenUrl, par.fechaPedido, null, par.texto);
     console.log('Pedido procesado exitosamente:', datos);
+    barridoMensajesAnteriores(conversationId, par.messageId); // sin await
   } catch (error) {
     console.error(`Error procesando par ${par.messageId}:`, error.message);
   }
@@ -392,7 +442,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     // CASO 2: Llegó texto
-    if (contenido && contenido.trim().length > 0) {
+    if (esTextoValido(contenido)) {
 
       // Si hay sesión abierta → procesar inmediatamente
       if (sesiones[conversationId]) {
