@@ -508,6 +508,12 @@ app.post('/webhook', async (req, res) => {
     }
 
     // CASO 2: Llegó texto
+    // TRIGGER MANUAL: "..." activa barrido inmediato
+    if (contenido.trim() === '...') {
+      console.log(`Barrido manual activado por operador en Conv: ${conversationId}`);
+      ejecutarBarrido(conversationId);
+      return;
+    }
     if (esTextoValido(contenido)) {
 
       // Si hay sesión abierta → procesar inmediatamente
