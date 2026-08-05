@@ -194,11 +194,12 @@ REGLAS PARA TIPO DE PEDIDO:
 - CAMBIO ENVIO CLIENTE → el operador escribe "cambio envio cliente". El cliente asume el costo del envío
 - CAMBIO RECOGER PRENDA → el operador escribe "cambio recoger prenda". Es un cambio en Bogotá donde el domiciliario entrega y recoge prenda(s)
 - ERROR → el operador escribe "error". Es un error de bodega, el valor recaudo siempre es 0
+- REENVIO → el operador escribe "reenvio". 
 
 REGLAS PARA DIRECCIÓN:
 - La dirección principal viene en la imagen
-- Si el operador menciona "oficina interrapidisimo" o similar → reemplazar la dirección por "Oficina Principal Interrapidísimo" no remplazaras nunca la ciudad
-- Si el operador menciona una dirección específica de oficina → usar esa dirección sin reemplazar la ciudad de la imagen 
+- Si el operador menciona "oficina interrapidisimo" o similar → reemplazar la dirección por "ENTREGA EN OFICINA INTERRAPIDISIMO" no remplazaras nunca la ciudad
+- Si el operador menciona una dirección específica de oficina → usar esa dirección depsues de "ENTREGA EN OFICINA INTERRAPIDISIMO" sin reemplazar la ciudad de la imagen 
 - La información del texto del operador tiene prioridad sobre la imagen, a excepcion de la ciudad descrita en la imagen 
 
 REGLAS PARA ERRORES DE ESCRITURA:
