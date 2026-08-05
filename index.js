@@ -22,6 +22,7 @@ const colaEscritura = [];
 let idsProcesados = new Set();
 let ultimoBarrido = null;
 const sesiones = {};
+const textosPendientes = {}; 
 let procesadosCargados = false;
 
 function obtenerInicioHoy() {
@@ -458,6 +459,21 @@ app.post('/webhook', async (req, res) => {
 
     // CASO 1: Llegó imagen → guardar sesión y esperar texto
     if (imagen) {
+      if (textosPendientes[conversationId]) {
+        const textoPendiente = textosPendientes[conversationId];
+        clearTimeout(textoPendiente.timer);
+        delete textosPendientes[conversationId];
+        idsProcesados.add(textoPendiente.messageId);
+        guardarIdsProcesados();
+        console.log(`Imagen llegó, emparejando con texto pendiente: "${textoPendiente.texto}"`);
+        await procesarPar({
+          imagenUrl: imagen.data_url,
+          texto: textoPendiente.texto,
+          messageId: textoPendiente.messageId,
+          fechaPedido: new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' })
+        }, conversationId);
+        return;
+      }
       if (sesiones[conversationId]?.timer) {
         clearTimeout(sesiones[conversationId].timer);
         const sesionAnterior = sesiones[conversationId];
@@ -570,6 +586,7 @@ app.post('/webhook', async (req, res) => {
       }
 
       // Si NO hay sesión → buscar imagen anterior en API
+  
       if (idsProcesados.has(messageId)) {
         console.log(`Texto ${messageId} ya procesado, ignorando`);
         return;
@@ -587,9 +604,18 @@ app.post('/webhook', async (req, res) => {
           fechaPedido: resultado.fechaPedido
         }, conversationId);
       } else {
-        console.log(`No hay imagen anterior, ignorando texto`);
+        console.log(`No hay imagen anterior por ahora, guardando texto en espera...`);
+        textosPendientes[conversationId] = {
+          texto: contenido.trim(),
+          messageId,
+          timer: setTimeout(() => {
+            if (textosPendientes[conversationId]?.messageId === messageId) {
+              console.log(`Timeout: nunca llegó imagen para texto "${contenido.trim()}", descartando`);
+              delete textosPendientes[conversationId];
+            }
+          }, 15000)
+        };
       }
-    }
 
   } catch (error) {
     console.error('Error en webhook:', error.message);
