@@ -19,6 +19,7 @@ const colaEscritura = [];
 let idsProcesados = new Set();
 let ultimoBarrido = null;
 let procesadosCargados = false;
+const MARGEN_SEGUNDOS = 20; // colchón para la latencia de indexado de la API de Chatwoot
 
 function obtenerInicioHoy() {
   const hoy = new Date();
@@ -294,18 +295,19 @@ async function buscarParesNuevos(conversationId, desde, hasta) {
 async function ejecutarBarrido(conversationId) {
   try {
     const ahora = Math.floor(Date.now() / 1000);
+    const hasta = ahora - MARGEN_SEGUNDOS;
     const desde = ultimoBarrido || obtenerInicioHoy();
-    console.log(`Barrido desde ${new Date(desde * 1000).toLocaleString('es-CO', {timeZone: 'America/Bogota'})} hasta ahora`);
-    const pares = await buscarParesNuevos(conversationId, desde, ahora);
+    console.log(`Barrido desde ${new Date(desde * 1000).toLocaleString('es-CO', {timeZone: 'America/Bogota'})} hasta ${new Date(hasta * 1000).toLocaleString('es-CO', {timeZone: 'America/Bogota'})}`);
+    const pares = await buscarParesNuevos(conversationId, desde, hasta);
     if (pares.length === 0) {
       console.log('Barrido sin pares pendientes');
-      ultimoBarrido = ahora;
+      ultimoBarrido = hasta;
       guardarIdsProcesados();
       return;
     }
     console.log(`Barrido encontró ${pares.length} pares pendientes`);
     await Promise.all(pares.map(par => procesarPar(par, conversationId)));
-    ultimoBarrido = ahora;
+    ultimoBarrido = hasta;
     guardarIdsProcesados();
   } catch (error) {
     console.error('Error en barrido:', error.message);
