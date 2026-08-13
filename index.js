@@ -119,7 +119,7 @@ async function buscarImagenAntesDeTexto(conversationId, messageId) {
   const anteriorEsImagen = anterior.attachments &&
     anterior.attachments.some(a => a.file_type === 'image');
 
-  if (anteriorEsImagen && !idsProcesados.has(messageId)) {
+  if (anteriorEsImagen && !idsProcesados.has(anterior.id)) {
     const attachment = anterior.attachments.find(a => a.file_type === 'image');
     return {
       imagenUrl: attachment.data_url,
@@ -511,6 +511,8 @@ app.post('/webhook', async (req, res) => {
             }, conversationId);
           } else {
             console.log(`No se encontró texto, registrando solo imagen`);
+            idsProcesados.add(sesionActual.imagenMessageId);
+            guardarIdsProcesados();
             await procesarPar({
               imagenUrl: sesionActual.imagenUrl,
               texto: '',
