@@ -19,7 +19,14 @@ const colaEscritura = [];
 let idsProcesados = new Set();
 let ultimoBarrido = null;
 let procesadosCargados = false;
-const MARGEN_SEGUNDOS = 20; // colchón para la latencia de indexado de la API de Chatwoot
+
+// Márgenes de espera (en segundos), basados en tiempo real del mensaje, no en timers
+const MARGEN_IMAGEN_ESPERA_TEXTO = 45; // una imagen sin texto espera esto antes de registrarse sola
+const MARGEN_TEXTO_ESPERA_IMAGEN = 10; // un texto sin imagen anterior espera esto antes de descartarse
+
+// Candado de concurrencia: evita que dos barridos corran en paralelo
+let barridoEnCurso = false;
+let barridoPendiente = false;
 
 function obtenerInicioHoy() {
   const hoy = new Date();
@@ -260,73 +267,160 @@ function esTextoValido(texto) {
   return !soloCaracteresRepetidos;
 }
 
-async function buscarParesNuevos(conversationId, desde, hasta) {
-  try {
-    const mensajes = await obtenerMensajes(conversationId);
-    const entrantes = mensajes
-      .filter(m => m.message_type === 0 && m.created_at >= desde && m.created_at <= hasta)
-      .sort((a, b) => a.created_at - b.created_at);
-    const pares = [];
-    for (let i = 1; i < entrantes.length; i++) {
-      const mensaje = entrantes[i];
-      if (!esTextoValido(mensaje.content)) continue;
-      if (idsProcesados.has(mensaje.id)) continue;
-      const anterior = entrantes[i - 1];
-      const anteriorEsImagen = anterior.attachments &&
-        anterior.attachments.some(a => a.file_type === 'image');
-      if (anteriorEsImagen) {
-        const attachment = anterior.attachments.find(a => a.file_type === 'image');
-        pares.push({
-          imagenUrl: attachment.data_url,
-          texto: mensaje.content.trim(),
-          messageId: mensaje.id,
-          fechaPedido: new Date(anterior.created_at * 1000)
-            .toLocaleString('es-CO', { timeZone: 'America/Bogota' })
-        });
-      }
-    }
-    return pares;
-  } catch (error) {
-    console.error('Error en buscarParesNuevos:', error.message);
-    return [];
-  }
+function tieneImagen(mensaje) {
+  return mensaje.attachments && mensaje.attachments.some(a => a.file_type === 'image');
 }
 
-async function ejecutarBarrido(conversationId) {
-  try {
-    const ahora = Math.floor(Date.now() / 1000);
-    const hasta = ahora - MARGEN_SEGUNDOS;
-    const desde = ultimoBarrido || obtenerInicioHoy();
-    console.log(`Barrido desde ${new Date(desde * 1000).toLocaleString('es-CO', {timeZone: 'America/Bogota'})} hasta ${new Date(hasta * 1000).toLocaleString('es-CO', {timeZone: 'America/Bogota'})}`);
-    const pares = await buscarParesNuevos(conversationId, desde, hasta);
-    if (pares.length === 0) {
-      console.log('Barrido sin pares pendientes');
-      ultimoBarrido = hasta;
-      guardarIdsProcesados();
-      return;
-    }
-    console.log(`Barrido encontró ${pares.length} pares pendientes`);
-    await Promise.all(pares.map(par => procesarPar(par, conversationId)));
-    ultimoBarrido = hasta;
-    guardarIdsProcesados();
-  } catch (error) {
-    console.error('Error en barrido:', error.message);
-  }
+function obtenerImagen(mensaje) {
+  return mensaje.attachments.find(a => a.file_type === 'image');
 }
 
 async function procesarPar(par, conversationId) {
   try {
     console.log(`Procesando par - MessageId: ${par.messageId} - Texto: "${par.texto}"`);
     idsProcesados.add(par.messageId);
+    if (par.imagenMessageId) idsProcesados.add(par.imagenMessageId);
     guardarIdsProcesados();
     const imageBuffer = await descargarImagen(par.imagenUrl);
     const filename = `pedido_${conversationId}_${Date.now()}.jpg`;
-    const imagenUrl = await subirImagen(imageBuffer, filename);
+    const imagenUrlSubida = await subirImagen(imageBuffer, filename);
     const datos = await procesarConGemini(imageBuffer, par.texto);
-    await escribirEnSheets(datos, imagenUrl, par.fechaPedido, null, par.texto);
+    if (!par.texto || par.texto.trim().length === 0) {
+      const aviso = 'Falta texto del pedido (producto, valor, pago) - registrado solo con imagen';
+      datos.porValidar = datos.porValidar ? `${aviso} | ${datos.porValidar}` : aviso;
+    }
+    await escribirEnSheets(datos, imagenUrlSubida, par.fechaPedido, null, par.texto);
     console.log('Pedido procesado exitosamente:', datos);
   } catch (error) {
     console.error(`Error procesando par ${par.messageId}:`, error.message);
+  }
+}
+
+// Recorre la ventana de mensajes en orden real y decide qué hacer con cada uno.
+// Devuelve el timestamp hasta donde es seguro avanzar ultimoBarrido.
+async function procesarVentana(conversationId, desde, ahora) {
+  const mensajes = await obtenerMensajes(conversationId);
+  const entrantes = mensajes
+    .filter(m => m.message_type === 0 && m.created_at >= desde)
+    .sort((a, b) => a.created_at - b.created_at);
+
+  let puntoDeCorte = desde;
+  let i = 0;
+
+  while (i < entrantes.length) {
+    const actual = entrantes[i];
+
+    if (idsProcesados.has(actual.id)) {
+      puntoDeCorte = actual.created_at;
+      i++;
+      continue;
+    }
+
+    if (tieneImagen(actual)) {
+      const siguiente = entrantes[i + 1];
+      const siguienteEsTextoValido = siguiente && esTextoValido(siguiente.content) && !tieneImagen(siguiente) && !idsProcesados.has(siguiente.id);
+
+      if (siguienteEsTextoValido) {
+        // Par completo: imagen + texto
+        await procesarPar({
+          imagenUrl: obtenerImagen(actual).data_url,
+          texto: siguiente.content.trim(),
+          messageId: siguiente.id,
+          imagenMessageId: actual.id,
+          fechaPedido: new Date(actual.created_at * 1000).toLocaleString('es-CO', { timeZone: 'America/Bogota' })
+        }, conversationId);
+        puntoDeCorte = siguiente.created_at;
+        i += 2;
+        continue;
+      }
+
+      // No hay texto válido justo después todavía (o el siguiente es otra imagen/basura)
+      const segundosEsperando = ahora - actual.created_at;
+      if (segundosEsperando >= MARGEN_IMAGEN_ESPERA_TEXTO) {
+        // Se acabó el tiempo de espera: registrar la imagen sola
+        await procesarPar({
+          imagenUrl: obtenerImagen(actual).data_url,
+          texto: '',
+          messageId: actual.id,
+          imagenMessageId: actual.id,
+          fechaPedido: new Date(actual.created_at * 1000).toLocaleString('es-CO', { timeZone: 'America/Bogota' })
+        }, conversationId);
+        puntoDeCorte = actual.created_at;
+        i++;
+        continue;
+      }
+
+      // Todavía dentro del margen de espera: detener el recorrido aquí, sin avanzar más
+      console.log(`Imagen ${actual.id} esperando texto (${segundosEsperando}s de ${MARGEN_IMAGEN_ESPERA_TEXTO}s)`);
+      break;
+    }
+
+    // Es un texto que llegó sin que una imagen anterior lo haya consumido como par
+    if (esTextoValido(actual.content)) {
+      const anterior = entrantes[i - 1];
+      const anteriorEsImagenSinUsar = anterior && tieneImagen(anterior) && !idsProcesados.has(anterior.id);
+
+      if (anteriorEsImagenSinUsar) {
+        // La imagen anterior no fue consumida en el paso previo (caso raro) → emparejar ahora
+        await procesarPar({
+          imagenUrl: obtenerImagen(anterior).data_url,
+          texto: actual.content.trim(),
+          messageId: actual.id,
+          imagenMessageId: anterior.id,
+          fechaPedido: new Date(anterior.created_at * 1000).toLocaleString('es-CO', { timeZone: 'America/Bogota' })
+        }, conversationId);
+        puntoDeCorte = actual.created_at;
+        i++;
+        continue;
+      }
+
+      const segundosEsperando = ahora - actual.created_at;
+      if (segundosEsperando >= MARGEN_TEXTO_ESPERA_IMAGEN) {
+        // Se acabó el tiempo de espera: no hay imagen para este texto, se descarta
+        console.log(`Texto ${actual.id} sin imagen anterior tras ${segundosEsperando}s, descartando: "${actual.content}"`);
+        idsProcesados.add(actual.id);
+        guardarIdsProcesados();
+        puntoDeCorte = actual.created_at;
+        i++;
+        continue;
+      }
+
+      // Todavía dentro del margen: detener el recorrido aquí
+      console.log(`Texto ${actual.id} esperando imagen anterior (${segundosEsperando}s de ${MARGEN_TEXTO_ESPERA_IMAGEN}s)`);
+      break;
+    }
+
+    // Mensaje no válido (ej: "-----", "...") y sin imagen → se ignora y se avanza
+    puntoDeCorte = actual.created_at;
+    i++;
+  }
+
+  return puntoDeCorte;
+}
+
+async function ejecutarBarrido(conversationId) {
+  if (barridoEnCurso) {
+    barridoPendiente = true;
+    return;
+  }
+  barridoEnCurso = true;
+  try {
+    const ahora = Math.floor(Date.now() / 1000);
+    const desde = ultimoBarrido || obtenerInicioHoy();
+    console.log(`Barrido desde ${new Date(desde * 1000).toLocaleString('es-CO', {timeZone: 'America/Bogota'})}`);
+    const nuevoPuntoDeCorte = await procesarVentana(conversationId, desde, ahora);
+    if (nuevoPuntoDeCorte > (ultimoBarrido || 0)) {
+      ultimoBarrido = nuevoPuntoDeCorte;
+      guardarIdsProcesados();
+    }
+  } catch (error) {
+    console.error('Error en barrido:', error.message);
+  } finally {
+    barridoEnCurso = false;
+    if (barridoPendiente) {
+      barridoPendiente = false;
+      ejecutarBarrido(conversationId); // sin await: se reprograma para captar lo que llegó mientras tanto
+    }
   }
 }
 
@@ -344,12 +438,17 @@ app.post('/webhook', async (req, res) => {
     const imagen = adjuntos.find(a => a.file_type === 'image');
     console.log(`Mensaje recibido - Conv: ${conversationId} - Contenido: "${contenido}" - Imagen: ${!!imagen}`);
 
-    // El webhook ya no procesa datos directamente: solo avisa que algo llegó.
-    // La API de Chatwoot es la única fuente de verdad para armar los pares.
-    await ejecutarBarrido(conversationId);
+    // El webhook solo dispara el barrido. La API de Chatwoot es la única fuente de verdad.
+    ejecutarBarrido(conversationId); // sin await: responde rápido al webhook, procesa en segundo plano
   } catch (error) {
     console.error('Error en webhook:', error.message);
   }
+});
+
+// Endpoint manual de recuperación (ej: menú de Sheets, o "..." desde WhatsApp)
+app.post('/barrido-manual', async (req, res) => {
+  ejecutarBarrido(CONVERSATION_ID_PRODUCCION);
+  res.json({ status: 'barrido activado' });
 });
 
 app.get('/', (req, res) => {
