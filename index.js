@@ -5,24 +5,19 @@ const { google } = require('googleapis');
 const { Storage } = require('@google-cloud/storage');
 const app = express();
 app.use(express.json());
-
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const CHATWOOT_URL = process.env.CHATWOOT_URL;
 const CHATWOOT_TOKEN = process.env.CHATWOOT_TOKEN;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const BUCKET_NAME = process.env.BUCKET_NAME;
-
 const CONVERSATION_ID_PRODUCCION = 5315;
 const ARCHIVO_PROCESADOS = 'procesados/mensajes_procesados.json';
-
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const storage = new Storage();
 let escribiendoEnSheets = false;
 const colaEscritura = [];
 let idsProcesados = new Set();
 let ultimoBarrido = null;
-const sesiones = {};
-const textosPendientes = {}; 
 let procesadosCargados = false;
 
 function obtenerInicioHoy() {
@@ -80,56 +75,6 @@ async function obtenerMensajes(conversationId) {
   }
 }
 
-async function buscarTextoDespuesDeImagen(conversationId, imagenMessageId) {
-  const inicioHoy = obtenerInicioHoy();
-  const mensajes = await obtenerMensajes(conversationId);
-
-  const entrantes = mensajes
-    .filter(m => m.message_type === 0 && m.created_at >= inicioHoy)
-    .sort((a, b) => a.created_at - b.created_at);
-
-  const indiceImagen = entrantes.findIndex(m => m.id === imagenMessageId);
-  if (indiceImagen === -1 || indiceImagen === entrantes.length - 1) return null;
-
-  const siguiente = entrantes[indiceImagen + 1];
-  const tieneTexto = siguiente.content && siguiente.content.trim().length > 0;
-  const noEsImagen = !siguiente.attachments || !siguiente.attachments.some(a => a.file_type === 'image');
-
-  if (tieneTexto && noEsImagen && !idsProcesados.has(siguiente.id)) {
-    return {
-      texto: siguiente.content.trim(),
-      messageId: siguiente.id
-    };
-  }
-  return null;
-}
-
-async function buscarImagenAntesDeTexto(conversationId, messageId) {
-  const inicioHoy = obtenerInicioHoy();
-  const mensajes = await obtenerMensajes(conversationId);
-
-  const entrantes = mensajes
-    .filter(m => m.message_type === 0 && m.created_at >= inicioHoy)
-    .sort((a, b) => a.created_at - b.created_at);
-
-  const indiceTexto = entrantes.findIndex(m => m.id === messageId);
-  if (indiceTexto <= 0) return null;
-
-  const anterior = entrantes[indiceTexto - 1];
-  const anteriorEsImagen = anterior.attachments &&
-    anterior.attachments.some(a => a.file_type === 'image');
-
-  if (anteriorEsImagen && !idsProcesados.has(anterior.id)) {
-    const attachment = anterior.attachments.find(a => a.file_type === 'image');
-    return {
-      imagenUrl: attachment.data_url,
-      fechaPedido: new Date(anterior.created_at * 1000)
-        .toLocaleString('es-CO', { timeZone: 'America/Bogota' })
-    };
-  }
-  return null;
-}
-
 async function descargarImagen(url) {
   const response = await axios.get(url, {
     headers: { 'api_access_token': CHATWOOT_TOKEN },
@@ -159,15 +104,12 @@ async function procesarConGemini(imageBuffer, textoAdicional) {
   };
   const prompt = `
 Eres un asistente especializado en extraer datos de pedidos de una tienda de ropa colombiana llamada Ocaso Jeans.
-
 Recibirás dos fuentes de información:
 1. Una imagen de un chat de WhatsApp con los datos del cliente (nombre, teléfono, dirección, ciudad)
 2. Un texto adicional escrito por el operador con información del pedido
-
 ESTRUCTURA DEL TEXTO DEL OPERADOR:
 El texto sigue este orden separado por comas:
 PRODUCTO(S) , VALOR RECAUDO , OBSERVACIÓN DE PAGO , OBSERVACIÓN DE DIRECCIÓN
-
 REGLAS PARA PRODUCTOS:
 - Un producto: "34 cla am" (talla + referencia + color)
 - Varios productos diferentes: "34 cla am + 36 hop ne"
@@ -175,19 +117,16 @@ REGLAS PARA PRODUCTOS:
 - El color puede ser: ne (negro), ao (azul oscuro), ac (azul claro), am (amarillo), rojo, entre otros
 - Las referencias pueden o no, estar acompañadas de diseños del producto como rot (desgastes o rotos) : "34 cla rot am"
 - Las referencias pueden ser: cla, hop, ov cargo, entre otras
-
 REGLAS PARA VALORES:
 - Todos los valores están en miles. Si ves 130, significa 130.000
 - Si aparece un solo valor → ese es tanto el Valor Recaudo como el Valor Total del Pedido
 - Si el operador indica que ya pagó ("ya pago", "ya cancelo", "pagado" o similar) → Valor Recaudo es 0, y el valor mencionado es el Valor Total del Pedido
 - Si hay abono → el texto tendrá tres valores: el recaudo (lo que cobra el mensajero), el abono (pago parcial previo) y el valor total. Ejemplo: "80, abono 50 bancolombia de 130" significa: recaudo 80.000, abono 50.000, valor total 130.000
-
 REGLAS PARA FORMA DE PAGO:
 - Si no se menciona ninguna forma de pago → "Contra entrega"
 - Si menciona Bancolombia, Nequi, Daviplata, Addi, Siste Crédito u otro medio → transcribir exactamente como aparece escrito aunque tenga errores ortográficos
 - Si hay abono + pago contra entrega → "Mixto"
 - Si ya pagó completamente → el medio mencionado (ej: "Bancolombia")
-
 REGLAS PARA TIPO DE PEDIDO:
 - VENTA → pedido normal, sin indicación especial
 - CAMBIO → el operador escribe "cambio" sin indicación adicional. Nosotros asumimos el costo del envío
@@ -195,27 +134,22 @@ REGLAS PARA TIPO DE PEDIDO:
 - CAMBIO RECOGER PRENDA → el operador escribe "cambio recoger prenda". Es un cambio en Bogotá donde el domiciliario entrega y recoge prenda(s)
 - ERROR → el operador escribe "error". Es un error de bodega, el valor recaudo siempre es 0
 - REENVIO → el operador escribe "reenvio". 
-
 REGLAS PARA DIRECCIÓN:
 - La dirección principal viene en la imagen
 - Si el operador menciona "oficina interrapidisimo" o similar → reemplazar la dirección por "ENTREGA EN OFICINA INTERRAPIDISIMO" no remplazaras nunca la ciudad
 - Si el operador menciona una dirección específica de oficina → usar esa dirección depsues de "ENTREGA EN OFICINA INTERRAPIDISIMO" sin reemplazar la ciudad de la imagen 
 - La información del texto del operador tiene prioridad sobre la imagen, a excepcion de la ciudad descrita en la imagen 
-
 REGLAS PARA ERRORES DE ESCRITURA:
 - El operador puede escribir rápido y cometer errores ortográficos
 - Interpreta cada palabra según el contexto. Ejemplos: "bancolomia" → Bancolombia, "camboi" → cambio, "ofician" → oficina
 - Si corriges algo, regístralo en el campo porValidar
-
 REGLAS PARA EL CAMPO POR VALIDAR:
 - Si todo está claro y completo → null
 - Si la IA corrigió una palabra mal escrita o hay una duda menor → describir brevemente
 - Si falta un dato crítico → indicarlo claramente. Ejemplo: "Falta dirección", "No se identificó ciudad", "Valor no especificado"
 - Los datos críticos son: nombre, teléfono, dirección, ciudad, valor
 - Si hay múltiples alertas → separarlas con " | "
-
 Texto adicional del operador: "${textoAdicional}"
-
 Extrae los siguientes datos y devuelve SOLO un JSON válido sin texto adicional ni backticks:
 {
   "nombre": "nombre completo del cliente extraído de la imagen",
@@ -231,7 +165,6 @@ Extrae los siguientes datos y devuelve SOLO un JSON válido sin texto adicional 
   "tipo": "VENTA, CAMBIO, CAMBIO ENVIO CLIENTE, CAMBIO RECOGER PRENDA o ERROR",
   "porValidar": "descripción de correcciones o datos faltantes, o null si todo está completo"
 }
-
 Si un dato no está disponible o no es posible determinarlo con certeza, usa null.
 Devuelve SOLO el JSON, sin explicaciones ni texto adicional.
   `;
@@ -287,14 +220,12 @@ async function _escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, tex
   console.log('Escribiendo en fila:', ultimaFila);
   console.log('textoImagen:', JSON.stringify(textoImagen));
   console.log('textoAdicional:', JSON.stringify(textoAdicional));
-
   let textoAbono = '';
   if (datos.abono) {
     textoAbono = datos.medioPagoAbono
       ? `${Number(datos.abono).toLocaleString('es-CO')} - ${datos.medioPagoAbono}`
       : `${Number(datos.abono).toLocaleString('es-CO')}`;
   }
-
   const columnMap = {
     'Nombre': datos.nombre || '',
     'Teléfono': datos.telefono || '',
@@ -311,7 +242,6 @@ async function _escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, tex
     'Fecha Pedido': fechaPedido || '',
     'Texto Imagen': textoImagen || textoAdicional || ''
   };
-
   const fila = headers.map(header => columnMap[header] !== undefined ? columnMap[header] : null);
   console.log('Fila a escribir:', JSON.stringify(fila));
   await sheets.spreadsheets.values.update({
@@ -322,73 +252,27 @@ async function _escribirEnSheets(datos, imagenUrl, fechaPedido, textoImagen, tex
   });
   console.log('Fila escrita exitosamente en fila:', ultimaFila);
 }
+
 function esTextoValido(texto) {
   if (!texto || texto.trim().length === 0) return false;
-  // Ignorar mensajes con solo caracteres repetidos como ---, ..., ===
   const soloCaracteresRepetidos = /^[\-\.\=\_\*\#\s]+$/.test(texto.trim());
   return !soloCaracteresRepetidos;
 }
-async function barridoMensajesAnteriores(conversationId, messageId) {
-  try {
-    const inicioHoy = obtenerInicioHoy();
-    const mensajes = await obtenerMensajes(conversationId);
-    const entrantes = mensajes
-      .filter(m => m.message_type === 0 && m.created_at >= inicioHoy)
-      .sort((a, b) => a.created_at - b.created_at);
 
-    const indiceActual = entrantes.findIndex(m => m.id === messageId);
-    if (indiceActual <= 0) return;
-
-    // Revisar los 4 mensajes anteriores al par recién procesado
-    const inicio = Math.max(0, indiceActual - 4);
-    const pendientes = [];
-
-    for (let i = inicio; i < indiceActual; i++) {
-      const mensaje = entrantes[i];
-      if (!esTextoValido(mensaje.content)) continue;
-      if (idsProcesados.has(mensaje.id)) continue;
-      if (i === 0) continue;
-
-      const anterior = entrantes[i - 1];
-      const anteriorEsImagen = anterior.attachments &&
-        anterior.attachments.some(a => a.file_type === 'image');
-
-      if (anteriorEsImagen) {
-        const attachment = anterior.attachments.find(a => a.file_type === 'image');
-        pendientes.push({
-          imagenUrl: attachment.data_url,
-          texto: mensaje.content.trim(),
-          messageId: mensaje.id,
-          fechaPedido: new Date(anterior.created_at * 1000)
-            .toLocaleString('es-CO', { timeZone: 'America/Bogota' })
-        });
-      }
-    }
-
-    if (pendientes.length === 0) return;
-    console.log(`Barrido encontró ${pendientes.length} pares pendientes`);
-    await Promise.all(pendientes.map(par => procesarPar(par, conversationId)));
-  } catch (error) {
-    console.error('Error en barrido:', error.message);
-  }
-}
 async function buscarParesNuevos(conversationId, desde, hasta) {
   try {
     const mensajes = await obtenerMensajes(conversationId);
     const entrantes = mensajes
       .filter(m => m.message_type === 0 && m.created_at >= desde && m.created_at <= hasta)
       .sort((a, b) => a.created_at - b.created_at);
-
     const pares = [];
     for (let i = 1; i < entrantes.length; i++) {
       const mensaje = entrantes[i];
       if (!esTextoValido(mensaje.content)) continue;
       if (idsProcesados.has(mensaje.id)) continue;
-
       const anterior = entrantes[i - 1];
       const anteriorEsImagen = anterior.attachments &&
         anterior.attachments.some(a => a.file_type === 'image');
-
       if (anteriorEsImagen) {
         const attachment = anterior.attachments.find(a => a.file_type === 'image');
         pares.push({
@@ -406,6 +290,7 @@ async function buscarParesNuevos(conversationId, desde, hasta) {
     return [];
   }
 }
+
 async function ejecutarBarrido(conversationId) {
   try {
     const ahora = Math.floor(Date.now() / 1000);
@@ -426,6 +311,7 @@ async function ejecutarBarrido(conversationId) {
     console.error('Error en barrido:', error.message);
   }
 }
+
 async function procesarPar(par, conversationId) {
   try {
     console.log(`Procesando par - MessageId: ${par.messageId} - Texto: "${par.texto}"`);
@@ -437,7 +323,6 @@ async function procesarPar(par, conversationId) {
     const datos = await procesarConGemini(imageBuffer, par.texto);
     await escribirEnSheets(datos, imagenUrl, par.fechaPedido, null, par.texto);
     console.log('Pedido procesado exitosamente:', datos);
-    barridoMensajesAnteriores(conversationId, par.messageId); // sin await
   } catch (error) {
     console.error(`Error procesando par ${par.messageId}:`, error.message);
   }
@@ -455,171 +340,11 @@ app.post('/webhook', async (req, res) => {
     const contenido = body.content || '';
     const adjuntos = body.attachments || [];
     const imagen = adjuntos.find(a => a.file_type === 'image');
-    const messageId = body.id;
     console.log(`Mensaje recibido - Conv: ${conversationId} - Contenido: "${contenido}" - Imagen: ${!!imagen}`);
 
-    // CASO 1: Llegó imagen → guardar sesión y esperar texto
-    if (imagen) {
-      if (textosPendientes[conversationId]) {
-        const textoPendiente = textosPendientes[conversationId];
-        clearTimeout(textoPendiente.timer);
-        delete textosPendientes[conversationId];
-        idsProcesados.add(textoPendiente.messageId);
-        guardarIdsProcesados();
-        console.log(`Imagen llegó, emparejando con texto pendiente: "${textoPendiente.texto}"`);
-        await procesarPar({
-          imagenUrl: imagen.data_url,
-          texto: textoPendiente.texto,
-          messageId: textoPendiente.messageId,
-          fechaPedido: new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' })
-        }, conversationId);
-        return;
-      }
-      if (sesiones[conversationId]?.timer) {
-        clearTimeout(sesiones[conversationId].timer);
-        const sesionAnterior = sesiones[conversationId];
-        delete sesiones[conversationId];
-        console.log(`Nueva imagen llegó, procesando sesión anterior inmediatamente Conv: ${conversationId}`);
-        procesarPar({
-          imagenUrl: sesionAnterior.imagenUrl,
-          texto: '',
-          messageId: sesionAnterior.imagenMessageId,
-          fechaPedido: sesionAnterior.fechaPedido
-        }, conversationId);
-      }
-      const sessionId = Date.now();
-      sesiones[conversationId] = {
-        sessionId,
-        imagenUrl: imagen.data_url,
-        imagenMessageId: messageId,
-        fechaPedido: new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' }),
-        timer: setTimeout(async () => {
-          const sesionActual = sesiones[conversationId];
-          if (!sesionActual || sesionActual.sessionId !== sessionId) return;
-          console.log(`Timer alcanzado para Conv: ${conversationId}, buscando texto en API...`);
-          const resultado = await buscarTextoDespuesDeImagen(conversationId, messageId);
-          delete sesiones[conversationId];
-          if (resultado) {
-            console.log(`Texto encontrado via API: "${resultado.texto}"`);
-            idsProcesados.add(resultado.messageId);
-            guardarIdsProcesados();
-            await procesarPar({
-              imagenUrl: sesionActual.imagenUrl,
-              texto: resultado.texto,
-              messageId: resultado.messageId,
-              fechaPedido: sesionActual.fechaPedido
-            }, conversationId);
-          } else {
-            console.log(`No se encontró texto, registrando solo imagen`);
-            idsProcesados.add(sesionActual.imagenMessageId);
-            guardarIdsProcesados();
-            await procesarPar({
-              imagenUrl: sesionActual.imagenUrl,
-              texto: '',
-              messageId: sessionId,
-              fechaPedido: sesionActual.fechaPedido
-            }, conversationId);
-          }
-        }, 45000)
-      };
-      console.log(`Sesión abierta para Conv: ${conversationId}, esperando texto...`);
-      return;
-    }
-
-    // CASO 2: Llegó texto
-    // TRIGGER MANUAL: "..." activa barrido inmediato
-    if (contenido.trim() === '...') {
-      console.log(`Barrido manual activado por operador en Conv: ${conversationId}`);
-      ejecutarBarrido(conversationId);
-      return;
-    }
-    if (esTextoValido(contenido)) {
-
-      // Si hay sesión abierta → procesar inmediatamente
-      if (sesiones[conversationId]) {
-        if (idsProcesados.has(messageId)) {
-          console.log(`Texto ${messageId} ya procesado, ignorando`);
-          return;
-        }
-        // Verificar que el mensaje anterior en Chatwoot sea la imagen de la sesión actual
-        const imagenAnterior = await buscarImagenAntesDeTexto(conversationId, messageId);
-        const sesionActual = sesiones[conversationId];
-      
-        if (imagenAnterior && imagenAnterior.imagenUrl === sesionActual.imagenUrl) {
-          // El texto corresponde a la imagen de la sesión → procesar normalmente
-          clearTimeout(sesionActual.timer);
-          delete sesiones[conversationId];
-          idsProcesados.add(messageId);
-          guardarIdsProcesados();
-          console.log(`Texto verificado con imagen de sesión, procesando Conv: ${conversationId}`);
-          await procesarPar({
-            imagenUrl: sesionActual.imagenUrl,
-            texto: contenido.trim(),
-            messageId,
-            fechaPedido: sesionActual.fechaPedido
-          }, conversationId);
-        } else {
-          // El texto NO corresponde a la imagen de la sesión → procesar sesión sin texto y buscar imagen correcta
-          console.log(`Texto no corresponde a imagen de sesión, procesando sesión anterior sin texto`);
-          clearTimeout(sesionActual.timer);
-          delete sesiones[conversationId];
-          procesarPar({
-            imagenUrl: sesionActual.imagenUrl,
-            texto: '',
-            messageId: sesionActual.imagenMessageId,
-            fechaPedido: sesionActual.fechaPedido
-          }, conversationId);
-      
-          // Buscar imagen correcta para este texto
-          if (imagenAnterior) {
-            idsProcesados.add(messageId);
-            guardarIdsProcesados();
-            console.log(`Imagen correcta encontrada para texto, procesando Conv: ${conversationId}`);
-            await procesarPar({
-              imagenUrl: imagenAnterior.imagenUrl,
-              texto: contenido.trim(),
-              messageId,
-              fechaPedido: imagenAnterior.fechaPedido
-            }, conversationId);
-          } else {
-            console.log(`No se encontró imagen correcta para texto, ignorando`);
-          }
-        }
-        return;
-      }
-
-      // Si NO hay sesión → buscar imagen anterior en API
-  
-      if (idsProcesados.has(messageId)) {
-        console.log(`Texto ${messageId} ya procesado, ignorando`);
-        return;
-      }
-      console.log(`Texto sin sesión, buscando imagen anterior en API...`);
-      const resultado = await buscarImagenAntesDeTexto(conversationId, messageId);
-      if (resultado) {
-        idsProcesados.add(messageId);
-        guardarIdsProcesados();
-        console.log(`Imagen anterior encontrada, procesando Conv: ${conversationId}`);
-        await procesarPar({
-          imagenUrl: resultado.imagenUrl,
-          texto: contenido.trim(),
-          messageId,
-          fechaPedido: resultado.fechaPedido
-        }, conversationId);
-      } else {
-        console.log(`No hay imagen anterior por ahora, guardando texto en espera...`);
-        textosPendientes[conversationId] = {
-          texto: contenido.trim(),
-          messageId,
-          timer: setTimeout(() => {
-            if (textosPendientes[conversationId]?.messageId === messageId) {
-              console.log(`Timeout: nunca llegó imagen para texto "${contenido.trim()}", descartando`);
-              delete textosPendientes[conversationId];
-            }
-          }, 15000)
-        };
-      }
-    }
+    // El webhook ya no procesa datos directamente: solo avisa que algo llegó.
+    // La API de Chatwoot es la única fuente de verdad para armar los pares.
+    await ejecutarBarrido(conversationId);
   } catch (error) {
     console.error('Error en webhook:', error.message);
   }
